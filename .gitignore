@@ -1,0 +1,18 @@
+# Secrets — never commit API keys
+.env
+
+# Downloaded media + derived artifacts (local only)
+videos/
+*.audio.m4a
+*.transcript.json
+*.transcript.txt
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+
+# OS / editor
+.DS_Store
+.idea/
+.vscode/
