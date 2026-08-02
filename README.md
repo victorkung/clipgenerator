@@ -74,9 +74,20 @@ cp .env.example .env   # then edit: XAI_API_KEY=…
 ./scripts/download.sh "https://x.com/user/status/STATUS_ID"
 ```
 
-Files land in `videos/`. The script prints path, resolution, codec, and size. If height is under 1080p, it prints a **WARNING** (common for X) but still saves the best available stream.
+Files land in `videos/`. Before the transfer, the script prints **title + duration** (and a size warning if the video is long). During the transfer you get **line-by-line progress** (`%`, speed, ETA). When finished it prints path, resolution, codec, and size. If height is under 1080p, it prints a **WARNING** (common for X) but still saves the best available stream.
+
+**Note:** An X post URL can still attach a **full podcast/episode file** (e.g. ~1 hour / multi‑GB at 1080p), not just a short clip. Duration in the pre-download banner is the source of truth for how long the wait will be.
 
 **Every download is forced to H.264 + AAC** before the script finishes (re-encode if YouTube only offered AV1/VP9).
+
+**Speed notes (especially X / HLS):**
+
+- Config uses **8 concurrent fragments** (`-N 8` in `config/yt-dlp.conf`). yt-dlp’s default is `1`, which serializes HLS and makes long X videos feel stuck. Override per run if needed: `./scripts/download.sh -N 16 "URL"`.
+- We prefer **H.264 HLS** over fat progressive HTTP when both exist (same 1080p can be ~1.3 GB HLS vs ~4.5 GB progressive on X).
+- Re-encode is skipped when the file is already H.264+AAC; otherwise macOS uses **VideoToolbox** hardware encode.
+- Optional: install `aria2c` (`brew install aria2`) and pass `--downloader aria2c` for some non-HLS sources — native `-N` is usually enough for X.
+- If you only need a rough offline copy for clipping, a lower ceiling is much faster, e.g.  
+  `./scripts/download.sh -f "bv*[height<=720]+ba/b" "URL"`.
 
 ### 3) Transcribe
 

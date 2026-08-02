@@ -16,6 +16,10 @@ Usage: ./scripts/download.sh [options] <URL> [URL...]
 Downloads into videos/ using config/yt-dlp.conf.
 Prefers ≥1080p H.264; always re-encodes to H.264+AAC if needed (X-compatible).
 
+Before transfer: prints title, duration, and a size warning for long videos.
+During transfer: line-by-line progress (% / speed / ETA). Config defaults to
+8 concurrent HLS/DASH fragments (-N 8); override with -N 4 or -N 16 as needed.
+
 Wrapper options:
   --strict-1080   Fail if no format with height ≥ 1080 is available
   --with-subs     Also download English captions (manual + auto) as .vtt
@@ -29,6 +33,7 @@ Examples:
   ./scripts/download.sh "https://x.com/user/status/..."
   ./scripts/download.sh --strict-1080 "URL"
   ./scripts/download.sh --with-subs "https://www.youtube.com/watch?v=..."
+  ./scripts/download.sh -N 16 "https://x.com/user/status/..."
   ./scripts/download.sh --cookies-from-browser chrome "URL"
 EOF
 }
@@ -119,13 +124,86 @@ fi
 paths_file="$(mktemp)"
 trap 'rm -f "$paths_file"' EXIT
 
-# Progress/logs on stderr; final filepath(s) on stdout via --print
+# Human-readable duration (seconds → H:MM:SS or M:SS)
+fmt_duration() {
+  local s="${1:-0}"
+  # strip decimals
+  s="${s%%.*}"
+  if ! [[ "$s" =~ ^[0-9]+$ ]]; then
+    echo "?"
+    return
+  fi
+  local h=$((s / 3600)) m=$(((s % 3600) / 60)) sec=$((s % 60))
+  if [[ "$h" -gt 0 ]]; then
+    printf '%d:%02d:%02d' "$h" "$m" "$sec"
+  else
+    printf '%d:%02d' "$m" "$sec"
+  fi
+}
+
+echo
+echo "=== Resolving media ==="
+echo "Saving under: $VIDEOS"
+echo "(X/YouTube posts can attach full-length videos — duration below is what will download.)"
+echo
+
+# Lightweight probe so the user sees title/duration before a long transfer.
+# Failures here are non-fatal; the real download still runs and reports errors.
 set +e
-yt-dlp \
+# Use ASCII unit separator-ish delimiter (|) — titles rarely include raw pipes from yt-dlp fields.
+probe_out="$(
+  yt-dlp \
+    --config-locations "$CONFIG" \
+    --skip-download \
+    --no-warnings \
+    --print "%(title)s|%(duration)s|%(id)s|%(webpage_url)s" \
+    "${extra_args[@]+"${extra_args[@]}"}" \
+    "${pass_args[@]}" 2>/dev/null
+)"
+probe_status=$?
+set -e
+
+if [[ "$probe_status" -eq 0 && -n "${probe_out// }" ]]; then
+  while IFS='|' read -r p_title p_dur p_id p_url || [[ -n "${p_title:-}" ]]; do
+    [[ -z "${p_title// }" ]] && continue
+    echo "Title:    $p_title"
+    echo "Duration: $(fmt_duration "$p_dur") (${p_dur%%.*}s)"
+    echo "ID:       $p_id"
+    [[ -n "${p_url// }" ]] && echo "URL:      $p_url"
+    if [[ "$p_dur" =~ ^[0-9]+(\.[0-9]+)?$ ]]; then
+      p_dur_int="${p_dur%%.*}"
+      if [[ "$p_dur_int" -ge 900 ]]; then
+        # Rough size hint at ~3 Mbps (common for 1080p progressive)
+        rough_mb=$((p_dur_int * 3 / 8))
+        echo "Note:     Long video (≥15 min). Rough size ballpark ~${rough_mb}MB+ at 1080p — this can take several minutes."
+      fi
+    fi
+    echo
+  done <<<"$probe_out"
+else
+  echo "(Could not pre-fetch metadata; continuing with download…)"
+  echo
+fi
+
+echo "=== Downloading ==="
+echo "Progress lines update as fragments/bytes arrive. Empty silence usually means"
+echo "still working (especially on long X HLS streams) — watch the % / ETA below."
+echo
+
+# --print implies --quiet (hides the progress bar). Force progress back on, and use
+# --newline so each update is a full line (visible in non-TTY / piped / agent logs).
+# Capture final path via --print-to-file so stdout stays free for progress + info.
+# PYTHONUNBUFFERED: avoid Python block-buffering progress when stderr is not a TTY.
+set +e
+PYTHONUNBUFFERED=1 yt-dlp \
   --config-locations "$CONFIG" \
-  --print after_move:filepath \
+  --no-quiet \
+  --progress \
+  --newline \
+  --print "before_dl:[download] starting: %(title)s (%(duration_string)s)" \
+  --print-to-file "after_move:%(filepath)s" "$paths_file" \
   "${extra_args[@]+"${extra_args[@]}"}" \
-  "${pass_args[@]}" >"$paths_file"
+  "${pass_args[@]}"
 yt_status=$?
 set -e
 
