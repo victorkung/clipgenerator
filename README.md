@@ -62,7 +62,7 @@ python3 --version
 ### 1) Clone and (optional) set API key
 
 ```bash
-git clone https://github.com/<you>/yt-x-vid-downloader-transcriber.git
+git clone https://github.com/victorkung/yt-x-vid-downloader-transcriber.git
 cd yt-x-vid-downloader-transcriber
 cp .env.example .env   # then edit: XAI_API_KEY=…
 ```
