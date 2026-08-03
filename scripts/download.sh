@@ -121,6 +121,20 @@ if [[ "$with_subs" -eq 1 ]]; then
   )
 fi
 
+# Folder date = ingest/posting day (today), not the content's original upload_date.
+# API always passes -o; CLI gets the same rule unless the user already set -o/--output.
+has_output=0
+for arg in "${pass_args[@]}"; do
+  if [[ "$arg" == "-o" || "$arg" == "--output" || "$arg" == -o=* || "$arg" == --output=* ]]; then
+    has_output=1
+    break
+  fi
+done
+if [[ "$has_output" -eq 0 ]]; then
+  today="$(date +%Y-%m-%d)"
+  extra_args+=(-o "videos/${today} %(uploader,title).50B/source.%(ext)s")
+fi
+
 paths_file="$(mktemp)"
 trap 'rm -f "$paths_file"' EXIT
 
@@ -144,6 +158,7 @@ fmt_duration() {
 echo
 echo "=== Resolving media ==="
 echo "Saving under: $VIDEOS"
+echo "Folder date:  $(date +%Y-%m-%d) (ingest/posting day — not original publish date)"
 echo "(X/YouTube posts can attach full-length videos — duration below is what will download.)"
 echo
 

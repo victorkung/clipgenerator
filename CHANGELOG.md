@@ -7,6 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- Source folder date is **ingest/posting day** (today), not the content’s original upload date
+- Typed Start/End times seek the player and scroll the transcript (Apply / Enter / blur)
+- Whisper model dropdown: least → most powerful, with length guidance
+- `AGENTS.md` / README: short session bootstrap so new Grok sessions skip re-discovery
+
 ### Planned
 
 - Caption edit + burn-in
@@ -55,6 +62,6 @@ Initial public CLI.
 - yt-dlp config, H.264 ensure, optional YouTube captions path
 - Agent git gatekeeper docs (`AGENTS.md`)
 
-[Unreleased]: https://github.com/victorkung/yt-x-vid-downloader-transcriber/compare/v0.2.0...HEAD
-[0.2.0]: https://github.com/victorkung/yt-x-vid-downloader-transcriber/compare/v0.1.0...v0.2.0
-[0.1.0]: https://github.com/victorkung/yt-x-vid-downloader-transcriber/releases/tag/v0.1.0
+[Unreleased]: https://github.com/victorkung/clipgenerator/compare/v0.2.0...HEAD
+[0.2.0]: https://github.com/victorkung/clipgenerator/compare/v0.1.0...v0.2.0
+[0.1.0]: https://github.com/victorkung/clipgenerator/releases/tag/v0.1.0

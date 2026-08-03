@@ -99,15 +99,33 @@ git status   # confirm clean (or only expected leftovers)
 
 ---
 
-## Project context (for agents)
+## Session bootstrap (read this first — keep context small)
 
-- **Name:** clipgenerator (git folder may still be the old name until renamed on GitHub).
-- **Purpose:** Local CLI + localhost UI to download YouTube/X videos, transcribe with **MLX Whisper**, manage **many clips per source**, export H.264 clips.
-- **Stack:** `yt-dlp`, `ffmpeg`, bash, `scripts/transcribe.py` (MLX Whisper), FastAPI (`app/backend`), Vite/React (`app/frontend`).
-- **UI:** Use design tokens and component classes in `app/frontend/src/styles/` — see `app/frontend/DESIGN.md`. Do not invent one-off font sizes or colors.
-- **Public:** Yes (intended). Local-only data lives in gitignored `.env`, `videos/`, `data/`.
-- **Product decision:** Single monorepo for daily use + GitHub (no separate private fork).
-- **STT:** Local only — no xAI dependency on the happy path.
-- **Not yet:** caption burn-in, AI clip suggestions, post scheduling.
+This file is **auto-loaded** every Grok session in this repo. Do **not** re-read the whole tree at start. Only open extra files when the task needs them.
+
+| Need | Open |
+|------|------|
+| Human how-to / run app | `README.md` |
+| What changed recently | `CHANGELOG.md` `[Unreleased]` |
+| UI styles | `app/frontend/DESIGN.md` + `app/frontend/src/styles/` |
+| Download defaults | `scripts/download.sh`, `config/yt-dlp.conf` |
+| STT | `scripts/transcribe.py` / `scripts/transcribe.sh` |
+| API / ingest / export | `app/backend/main.py` |
+| Folder naming | `app/backend/naming.py` |
+| UI editor | `app/frontend/src/App.jsx` |
+
+### Product (clipgenerator)
+
+- **Repo:** `victorkung/clipgenerator` — local daily driver, public-safe monorepo.
+- **Flow:** URL → yt-dlp download → MLX Whisper STT → multi-clip editor → H.264+AAC export under `videos/…/clips/`.
+- **Run UI:** `./scripts/serve.sh` → `:8787` · `cd app/frontend && npm run dev` → `:5173` (proxies `/api`). No `RELOAD=1` during long jobs.
+- **Layout:** `videos/YYYY-MM-DD ShowName/` — date is **ingest/posting day (today)**, not original publish date. Library: gitignored `data/library.json`.
+- **Stack:** bash + yt-dlp + ffmpeg · FastAPI `app/backend` · Vite/React `app/frontend` · STT local MLX only (no cloud key on happy path).
+- **Whisper UI order (least → most power):** `small` (default, any length) → `medium` (~≤45–60m / better names) → `turbo` (long + accuracy) → `large-v3` (short/hard only).
+- **Editor:** type Start/End + Enter/Apply → seek player + scroll transcript. ⌥ transcript line = set start; ⇧ = set end.
+- **X gotcha:** some posts are **promo clips** (~30s); full episode may live on YouTube/Spotify/RSS — duration in UI is truth for what downloaded.
+- **Never commit:** `.env`, `videos/`, `data/`, `.venv/`, transcripts/audio sidecars.
+- **UI rule:** tokens/classes in `app/frontend/src/styles/` only — no one-off colors/sizes.
+- **Not built yet:** caption burn-in, AI clip suggestions, post scheduling.
 
 When unsure whether a path is public-safe, **ask the human** instead of committing.

@@ -9,6 +9,34 @@ const DEFAULT_STAGES = [
   { id: "done", label: "Ready" },
 ];
 
+/** Least → most powerful. Labels stay short; `guide` is the length/when-to-use hint. */
+const WHISPER_MODELS = [
+  {
+    id: "small",
+    label: "small · lightest",
+    guide:
+      "Default for any length. Fast daily driver (~5 min STT on a 1.5h English pod).",
+  },
+  {
+    id: "medium",
+    label: "medium · mid",
+    guide:
+      "Stronger than small. Prefer under ~45–60 min, or when small mangles names/jargon.",
+  },
+  {
+    id: "turbo",
+    label: "turbo · strong",
+    guide:
+      "Near-large quality, still relatively fast. Best upgrade for long pods that need accuracy.",
+  },
+  {
+    id: "large-v3",
+    label: "large-v3 · max",
+    guide:
+      "Highest accuracy; slowest & most RAM. Short clips or very hard audio only.",
+  },
+];
+
 function stageIndex(stage, stages) {
   const ids = stages.map((s) => s.id);
   const map = {
@@ -172,9 +200,17 @@ export default function App() {
 
   const activeSegIndex = useMemo(() => {
     if (!segments.length) return -1;
-    return segments.findIndex(
+    const exact = segments.findIndex(
       (s) => currentTime >= s.start && currentTime < (s.end || s.start + 0.01)
     );
+    if (exact >= 0) return exact;
+    // Between / past segments (common after typing a time): nearest started line
+    let best = -1;
+    for (let i = 0; i < segments.length; i++) {
+      if (segments[i].start <= currentTime) best = i;
+      else break;
+    }
+    return best;
   }, [segments, currentTime]);
 
   useEffect(() => {
@@ -366,25 +402,63 @@ export default function App() {
     saveClipPatch({ t_in, t_out: t });
   }
 
-  function applyTypedTimes() {
+  /**
+   * Apply typed Start/End. Seeks the player (and thus transcript highlight/scroll)
+   * so typing a time immediately shows that moment.
+   * @param {{ seek?: "in" | "out" }} [opts]
+   */
+  function applyTypedTimes(opts = {}) {
     if (!activeClip) return;
-    const t_in = parseTsInput(inDraft);
-    const t_out = parseTsInput(outDraft);
+    const seekField = opts.seek === "out" ? "out" : "in";
+    let t_in = parseTsInput(inDraft);
+    let t_out = parseTsInput(outDraft);
     if (t_in == null || t_out == null) {
       setError("Use times like 1:23 or 1:02:03");
       return;
     }
-    if (t_out <= t_in) {
-      setError("End must be after start");
-      return;
+
+    const dur =
+      typeof source?.duration === "number" && source.duration > 0
+        ? source.duration
+        : null;
+    if (dur != null) {
+      t_in = Math.max(0, Math.min(t_in, Math.max(0, dur - 0.5)));
+      t_out = Math.max(0, Math.min(t_out, dur));
+    } else {
+      t_in = Math.max(0, t_in);
+      t_out = Math.max(0, t_out);
     }
+
+    // If start moves past end (common when typing a new start while end is still 0:30),
+    // keep a sensible duration instead of hard-failing.
+    if (t_out <= t_in) {
+      const prevDur = Math.max(0.5, (activeClip.t_out || 0) - (activeClip.t_in || 0));
+      if (seekField === "out") {
+        t_in = Math.max(0, t_out - prevDur);
+      } else {
+        t_out = t_in + prevDur;
+        if (dur != null) t_out = Math.min(t_out, dur);
+        if (t_out <= t_in) t_out = Math.min(dur ?? t_in + 0.5, t_in + 0.5);
+      }
+    }
+
+    setError(null);
+    // Seek first so video + transcript jump immediately; then persist.
+    const seekT =
+      seekField === "out" ? Math.max(t_in, t_out - 0.25) : t_in;
+    seekTo(seekT);
     saveClipPatch({ t_in, t_out });
   }
 
   function seekTo(t) {
     if (videoRef.current) {
-      videoRef.current.currentTime = t;
-      setCurrentTime(t);
+      const dur = videoRef.current.duration;
+      let next = Math.max(0, t);
+      if (Number.isFinite(dur) && dur > 0) {
+        next = Math.min(next, Math.max(0, dur - 0.05));
+      }
+      videoRef.current.currentTime = next;
+      setCurrentTime(next);
     }
   }
 
@@ -427,29 +501,39 @@ export default function App() {
           </div>
         </div>
         <form className="ingest" onSubmit={onIngest}>
-          <input
-            className="input"
-            type="url"
-            placeholder="Paste YouTube or X URL…"
-            value={url}
-            onChange={(e) => setUrl(e.target.value)}
-            disabled={busy}
-          />
-          <select
-            className="select"
-            value={model}
-            onChange={(e) => setModel(e.target.value)}
-            disabled={busy}
-            title="Faster models recommended for long pods"
-          >
-            <option value="small">small · fast</option>
-            <option value="turbo">turbo · better</option>
-            <option value="medium">medium · accurate</option>
-            <option value="large-v3">large-v3 · slow</option>
-          </select>
-          <button type="submit" className="btn btn--primary" disabled={busy}>
-            {busy ? "Starting…" : "Ingest"}
-          </button>
+          <div className="ingest__row">
+            <input
+              className="input"
+              type="url"
+              placeholder="Paste YouTube or X URL…"
+              value={url}
+              onChange={(e) => setUrl(e.target.value)}
+              disabled={busy}
+            />
+            <select
+              className="select"
+              value={model}
+              onChange={(e) => setModel(e.target.value)}
+              disabled={busy}
+              aria-label="Whisper model, least to most powerful"
+              title={
+                WHISPER_MODELS.find((m) => m.id === model)?.guide ||
+                "Whisper model"
+              }
+            >
+              {WHISPER_MODELS.map((m) => (
+                <option key={m.id} value={m.id} title={m.guide}>
+                  {m.label}
+                </option>
+              ))}
+            </select>
+            <button type="submit" className="btn btn--primary" disabled={busy}>
+              {busy ? "Starting…" : "Ingest"}
+            </button>
+          </div>
+          <p className="ingest__hint" aria-live="polite">
+            {WHISPER_MODELS.find((m) => m.id === model)?.guide}
+          </p>
         </form>
       </header>
 
@@ -645,10 +729,16 @@ export default function App() {
                             className="input input--mono"
                             value={inDraft}
                             onChange={(e) => setInDraft(e.target.value)}
-                            onBlur={applyTypedTimes}
-                            onKeyDown={(e) => e.key === "Enter" && applyTypedTimes()}
+                            onBlur={() => applyTypedTimes({ seek: "in" })}
+                            onKeyDown={(e) => {
+                              if (e.key === "Enter") {
+                                e.preventDefault();
+                                applyTypedTimes({ seek: "in" });
+                              }
+                            }}
                             placeholder="0:00"
                             disabled={!activeClip}
+                            title="Enter a time — player and transcript jump here"
                           />
                         </label>
                         <label className="field">
@@ -657,17 +747,24 @@ export default function App() {
                             className="input input--mono"
                             value={outDraft}
                             onChange={(e) => setOutDraft(e.target.value)}
-                            onBlur={applyTypedTimes}
-                            onKeyDown={(e) => e.key === "Enter" && applyTypedTimes()}
+                            onBlur={() => applyTypedTimes({ seek: "out" })}
+                            onKeyDown={(e) => {
+                              if (e.key === "Enter") {
+                                e.preventDefault();
+                                applyTypedTimes({ seek: "out" });
+                              }
+                            }}
                             placeholder="0:30"
                             disabled={!activeClip}
+                            title="Enter a time — player and transcript jump near end"
                           />
                         </label>
                         <button
                           type="button"
                           className="btn btn--sm"
-                          onClick={applyTypedTimes}
+                          onClick={() => applyTypedTimes({ seek: "in" })}
                           disabled={!activeClip}
+                          title="Apply times and jump player to start"
                         >
                           Apply
                         </button>

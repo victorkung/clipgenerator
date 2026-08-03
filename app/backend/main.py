@@ -407,11 +407,11 @@ def _run_ingest(source_id: str, body: IngestBody) -> None:
             lib.upsert_source(s)
 
             # Prefer channel/uploader as "Podcast Name" in folder: YYYY-MM-DD All-In Podcast
+            # Date = ingest/posting day (today), not original publish date.
             podcast = meta.get("uploader") or nice_title
             project_dir = make_project_dir(
                 VIDEOS,
                 title=nice_title,
-                upload_date=meta.get("upload_date"),
                 media_id=meta.get("id"),
                 podcast_name=clean_title(podcast, max_len=50),
             )

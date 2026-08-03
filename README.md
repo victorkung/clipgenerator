@@ -10,6 +10,20 @@ URL → download → Whisper transcript → multi-clip editor → export clips/
 
 Release history: **[CHANGELOG.md](CHANGELOG.md)** (Keep a Changelog style). UI design system: **[app/frontend/DESIGN.md](app/frontend/DESIGN.md)**.
 
+## New Grok / AI session (shortest path)
+
+Grok **auto-loads [AGENTS.md](AGENTS.md)** at session start (project rules). That file is the source of truth for agents — git rules + a compact product map. You do **not** need to paste chat history.
+
+**Human / agent checklist for a fresh session:**
+
+1. Work in this repo root: `clipgenerator` (`victorkung/clipgenerator`).
+2. Trust **AGENTS.md** first; only open other files when the task needs them (table inside AGENTS.md).
+3. For “what shipped / what’s next”: `CHANGELOG.md` → `[Unreleased]`.
+4. To run the app: section **Quick start — web UI** below (API `:8787`, UI `:5173`).
+5. Prefer a **new session** when context is large or the task is unrelated — don’t burn tokens re-exploring.
+
+Optional (experimental): enable Grok cross-session memory if you want recall across days — see Grok docs on memory (`grok --experimental-memory` / config). Project facts still belong in **AGENTS.md**, not chat.
+
 ## Prerequisites
 
 ```bash
@@ -41,10 +55,10 @@ cd app/frontend && npm run dev
 
 Then:
 
-1. Paste a YouTube or X URL → **Ingest** (download + transcribe).
+1. Paste a YouTube or X URL → **Ingest** (download + transcribe). Check duration — some X posts are short **promo clips**, not the full episode.
 2. Wait for status **ready** (stage pipeline + progress bar).
 3. Play video; transcript highlights by time; click a line to seek.
-4. **Set start** / **Set end** from the playhead (or type `m:ss` and **Apply**).
+4. **Set start** / **Set end** from the playhead, or type `m:ss` / `h:mm:ss` (Enter or **Apply** seeks the player + transcript).
 5. **Export clip** → `videos/…/clips/*.mp4` (H.264 + AAC, with audio).
 
 ### Editing clips
@@ -53,7 +67,7 @@ Then:
 |--------|-----|
 | Set start | Playhead → **Set start**, or ⌥/Alt+click a transcript line |
 | Set end | Playhead → **Set end**, or Shift+click a transcript line |
-| Type times | Start/End fields → **Apply** |
+| Type times | Start/End fields → Enter or **Apply** (jumps player + transcript to that time) |
 | New range on same video | **+ New clip** |
 | Rename source | Click the title or **Rename** |
 | Remove from sidebar | **×** or **Remove** (files on disk are kept) |
@@ -62,9 +76,11 @@ Library state: gitignored `data/library.json` (sidebar only). Media: gitignored 
 
 ### Folder layout
 
+The date prefix is the **ingest / posting day** (when you download it), not the original publish date — so you can group by the day you’re posting clips.
+
 ```text
 videos/
-  2026-08-02 All-In Podcast/
+  2026-08-03 All-In Podcast/     ← today, if you ingested today
     source.mp4
     source.audio.m4a
     source.transcript.json
@@ -89,14 +105,16 @@ Typical cleanup after upload: delete `source.mp4` (+ audio/transcript) to save s
 
 Default is **`small`** with **segment** timestamps only (fast enough for clipping; no word-level karaoke timing).
 
-| Model | When |
-|-------|------|
-| **`small` (default)** | Daily use; aim for ~sub‑5 min STT on ~1.5h English pods (M-series) |
-| `turbo` | Faster/better quality balance when small mangles names |
-| `medium` | Higher accuracy; slower |
-| `large-v3` | Max accuracy; slowest / most RAM |
+Listed **least → most powerful**. Pick by length and how hard the audio is — not auto-selected by duration.
 
-Override in the UI dropdown or `--model`. Not auto-selected by video length.
+| Model | Power | When |
+|-------|-------|------|
+| **`small` (default)** | lightest | **Any length** daily driver. ~sub‑5 min STT on ~1.5h English pods (M-series). |
+| `medium` | mid | Stronger than small. Prefer **under ~45–60 min**, or when small mangles names/jargon. |
+| `turbo` | strong | Near-large quality, still relatively fast. Best upgrade for **long pods** that need accuracy. |
+| `large-v3` | max | Highest accuracy; slowest / most RAM. **Short clips** or very hard audio only. |
+
+Override in the UI dropdown or `--model`.
 
 Optional model cache (e.g. external SSD):
 

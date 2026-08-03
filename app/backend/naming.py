@@ -41,10 +41,10 @@ def slugify(raw: str, *, max_len: int = 48) -> str:
     return s[:max_len].strip("-")
 
 
-def format_upload_date(upload_date: str | None) -> str:
-    """yt-dlp upload_date is YYYYMMDD; fall back to today."""
-    if upload_date and re.fullmatch(r"\d{8}", upload_date):
-        return f"{upload_date[:4]}-{upload_date[4:6]}-{upload_date[6:8]}"
+def ingest_day(*, day: str | None = None) -> str:
+    """Folder date prefix: ingest/posting day (today), not the content's original publish date."""
+    if day and re.fullmatch(r"\d{4}-\d{2}-\d{2}", day):
+        return day
     return date.today().isoformat()
 
 
@@ -62,24 +62,27 @@ def make_project_dir(
     videos_root: Path,
     *,
     title: str,
-    upload_date: str | None,
     media_id: str | None,
     podcast_name: str | None = None,
+    day: str | None = None,
 ) -> Path:
     """
     videos/YYYY-MM-DD Podcast Name/
+
+    YYYY-MM-DD is the **ingest / posting day** (default: today), so the library
+    groups by when you work on a clip — not when the source was originally published.
     Prefer show/uploader as the podcast name; fall back to cleaned title.
     """
-    day = format_upload_date(upload_date)
+    folder_day = ingest_day(day=day)
     show = safe_folder_name(podcast_name or title, max_len=55)
-    base = videos_root / f"{day} {show}"
+    base = videos_root / f"{folder_day} {show}"
     if not base.exists():
         base.mkdir(parents=True, exist_ok=True)
         (base / "clips").mkdir(exist_ok=True)
         return base
     # Collision — append short media id
     tail = (media_id or "x")[-8:]
-    base = videos_root / f"{day} {show} ({tail})"
+    base = videos_root / f"{folder_day} {show} ({tail})"
     base.mkdir(parents=True, exist_ok=True)
     (base / "clips").mkdir(exist_ok=True)
     return base

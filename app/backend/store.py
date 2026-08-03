@@ -135,7 +135,7 @@ def make_source(
         "title": title,
         "url": url,
         "video_path": video_path,
-        "folder": None,  # videos/YYYY-MM-DD_slug/
+        "folder": None,  # videos/YYYY-MM-DD Podcast Name/ (date = ingest day)
         "transcript_json": None,
         "transcript_txt": None,
         "duration": None,

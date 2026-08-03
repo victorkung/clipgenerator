@@ -62,11 +62,19 @@
 
 .ingest {
   display: flex;
-  gap: var(--space-2);
+  flex-direction: column;
+  gap: var(--space-1);
   flex: 1;
   max-width: 740px;
   min-width: 280px;
+  align-items: stretch;
+}
+
+.ingest__row {
+  display: flex;
+  gap: var(--space-2);
   align-items: center;
+  min-width: 0;
 }
 
 .ingest .input {
@@ -76,13 +84,22 @@
 
 .ingest .select {
   width: auto;
-  min-width: 9.5rem;
+  min-width: 11.5rem;
   flex-shrink: 0;
 }
 
 .ingest .btn {
   height: var(--control-h-md);
   flex-shrink: 0;
+}
+
+.ingest__hint {
+  margin: 0;
+  padding-left: 2px;
+  font-size: var(--text-xs);
+  line-height: var(--leading-tight);
+  color: var(--color-text-tertiary);
+  max-width: 100%;
 }
 
 /* ——— Body grid ——— */
