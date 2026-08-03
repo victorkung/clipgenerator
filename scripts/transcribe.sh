@@ -1,10 +1,17 @@
 #!/usr/bin/env bash
 # Generate a searchable timestamped transcript from a local video.
-# Prefers sidecar YouTube captions when present; otherwise uses xAI STT.
+# Prefers sidecar YouTube captions when present; otherwise local MLX Whisper.
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-PY="${ROOT}/scripts/transcribe.py"
+PY_SCRIPT="${ROOT}/scripts/transcribe.py"
+
+# Prefer project venv (mlx-whisper lives there)
+if [[ -x "${ROOT}/.venv/bin/python" ]]; then
+  PYTHON="${ROOT}/.venv/bin/python"
+else
+  PYTHON="python3"
+fi
 
 usage() {
   cat <<'EOF'
@@ -15,21 +22,21 @@ Writes searchable transcript files next to the video:
   <stem>.transcript.txt
 
 Prefers free sidecar captions (.vtt/.srt from download --with-subs).
-Otherwise extracts audio and calls xAI STT (requires XAI_API_KEY).
+Otherwise extracts audio and runs local MLX Whisper (no API key).
 
 Options:
   --force       Regenerate even if transcript outputs already exist
-  --stt         Force xAI STT even if sidecar captions exist
-  --language    Language code for STT formatting (default: en)
+  --stt         Force Whisper even if sidecar captions exist
+  --model NAME  Whisper model (default: medium). Examples: small, medium, large-v3
+  --language    Language code (default: en)
   -h, --help    Show this help
 
 Examples:
   ./scripts/transcribe.sh "videos/Talk [abc123].mp4"
-  ./scripts/transcribe.sh --force "videos/Talk [abc123].mp4"
-  ./scripts/transcribe.sh --stt "videos/Talk [abc123].mp4"
+  ./scripts/transcribe.sh --force --model medium "videos/Talk [abc123].mp4"
+  ./scripts/transcribe.sh --model large-v3 "videos/Talk [abc123].mp4"
 
-Timestamps are approximate (for finding moments). For burn-in captions
-on a finished short, use FCP auto-captions on the clipped audio.
+Timestamps are approximate (for finding moments). Caption burn-in is a later release.
 EOF
 }
 
@@ -43,14 +50,9 @@ if [[ "${1:-}" == "-h" || "${1:-}" == "--help" ]]; then
   exit 0
 fi
 
-if [[ ! -f "$PY" ]]; then
-  echo "error: missing $PY" >&2
+if [[ ! -f "$PY_SCRIPT" ]]; then
+  echo "error: missing $PY_SCRIPT" >&2
   exit 1
 fi
 
-if ! command -v python3 >/dev/null 2>&1; then
-  echo "error: python3 not found" >&2
-  exit 1
-fi
-
-exec python3 "$PY" "$@"
+exec "$PYTHON" "$PY_SCRIPT" "$@"

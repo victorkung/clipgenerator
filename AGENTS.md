@@ -25,8 +25,10 @@ Also scan staged/unstaged paths for secrets and private data:
 
 | Must never be committed | Why |
 |-------------------------|-----|
-| `.env` | API keys (`XAI_API_KEY`, etc.) |
-| Anything under `videos/` | Downloaded media, transcripts, audio extracts |
+| `.env` | API keys / local config |
+| Anything under `videos/` | Downloaded media, transcripts, audio extracts, exports |
+| Anything under `data/` | Local library / project DB |
+| `.venv/`, `node_modules/` | Environment noise |
 | `*.audio.m4a`, `*.transcript.json`, `*.transcript.txt` | Derived private artifacts |
 | Real API keys/tokens in any file | Credential leak |
 | Cookies, browser export files, session dumps | Account compromise |
@@ -34,9 +36,9 @@ Also scan staged/unstaged paths for secrets and private data:
 **Hard fail if:**
 
 - `.env` is tracked or staged
-- Any path under `videos/` is staged
+- Any path under `videos/` or `data/` is staged
 - `git grep` / diff shows a live-looking key (`xai-…`, `sk-…`, `Bearer …`, long high-entropy secrets)
-- `.gitignore` no longer covers `.env` and `videos/`
+- `.gitignore` no longer covers `.env`, `videos/`, `data/`, `.venv/`
 
 If a secret was ever committed historically, **stop** and rotate/remediate — do not “fix forward” by committing more on top without telling the human.
 
@@ -46,29 +48,29 @@ This repo is **Option 1: one public daily-driver repo**. Every commit must be sa
 
 - [ ] No personal notes, client names, or private URLs that shouldn’t be public
 - [ ] No large binaries or media
-- [ ] README / `.env.example` still describe **BYO `XAI_API_KEY`** (never a real key)
-- [ ] New scripts don’t hardcode keys or absolute personal paths that leak identity unnecessarily
+- [ ] README / `.env.example` never ship real keys; STT is **local Whisper** (no required cloud key)
+- [ ] New scripts don’t hardcode keys or absolute personal paths that leak identity unnecessarily (`MODEL_DIR` examples are fine)
 
 ### 4. Sanity on the change (soft → hard if broken)
 
 - [ ] `bash -n scripts/*.sh` (syntax)
-- [ ] If `transcribe.py` or Python changed: `python3 -m py_compile scripts/transcribe.py`
-- [ ] Scripts that should be executable still are (`download.sh`, `to-h264.sh`, `transcribe.sh`)
+- [ ] If Python changed: `python3 -m py_compile` on touched modules (prefer `.venv/bin/python`)
+- [ ] Scripts that should be executable still are (`download.sh`, `to-h264.sh`, `transcribe.sh`, `serve.sh`)
 - [ ] README / docs match behavior if flags or layout changed
 
-Do **not** require a full download/STT round-trip for every commit (costs API + bandwidth). Only run live download/STT when the human asks or the change is in that path and needs proof.
+Do **not** require a full download/STT round-trip for every commit (bandwidth + model time). Only run live download/STT when the human asks or the change is in that path and needs proof.
 
 ### 5. Stage deliberately
 
 ```bash
 git status
 # stage only intended paths — never `git add .` / `git add -A` if status shows
-# ignored junk, videos, or .env (verify with git status after staging)
+# ignored junk, videos, data, or .env (verify with git status after staging)
 git add <explicit paths>
 git status   # re-check staged set
 ```
 
-Prefer explicit paths over blanket adds. After staging, confirm the index does **not** include secrets or `videos/`.
+Prefer explicit paths over blanket adds. After staging, confirm the index does **not** include secrets, `videos/`, or `data/`.
 
 ### 6. Commit message
 
@@ -99,9 +101,13 @@ git status   # confirm clean (or only expected leftovers)
 
 ## Project context (for agents)
 
-- **Purpose:** Local CLI to download YouTube/X videos and generate timestamped transcripts.
-- **Stack:** `yt-dlp`, `ffmpeg`, bash, `scripts/transcribe.py` (xAI STT, BYO key).
-- **Public:** Yes (intended). Local-only data lives in gitignored `.env` and `videos/`.
-- **Product decision:** Single repo for daily use + GitHub (no separate private fork).
+- **Name:** clipgenerator (git folder may still be the old name until renamed on GitHub).
+- **Purpose:** Local CLI + localhost UI to download YouTube/X videos, transcribe with **MLX Whisper**, manage **many clips per source**, export H.264 clips.
+- **Stack:** `yt-dlp`, `ffmpeg`, bash, `scripts/transcribe.py` (MLX Whisper), FastAPI (`app/backend`), Vite/React (`app/frontend`).
+- **UI:** Use design tokens and component classes in `app/frontend/src/styles/` — see `app/frontend/DESIGN.md`. Do not invent one-off font sizes or colors.
+- **Public:** Yes (intended). Local-only data lives in gitignored `.env`, `videos/`, `data/`.
+- **Product decision:** Single monorepo for daily use + GitHub (no separate private fork).
+- **STT:** Local only — no xAI dependency on the happy path.
+- **Not yet:** caption burn-in, AI clip suggestions, post scheduling.
 
 When unsure whether a path is public-safe, **ask the human** instead of committing.

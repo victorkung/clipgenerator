@@ -2,8 +2,9 @@
 """Transcribe a local video for search/navigation (approximate timestamps).
 
 Prefer sidecar YouTube captions (.vtt/.srt) when present; otherwise extract
-audio and call xAI Speech-to-Text. Writes *.transcript.json and *.transcript.txt
-beside the video. Not intended for burn-in caption accuracy — use FCP on clips.
+audio and run local MLX Whisper. Writes *.transcript.json and *.transcript.txt
+beside the video. Not intended for burn-in caption accuracy — use FCP or the
+clipgenerator caption release on clips.
 """
 
 from __future__ import annotations
@@ -14,20 +15,37 @@ import os
 import re
 import subprocess
 import sys
-import urllib.error
-import urllib.request
 from pathlib import Path
 from typing import Any
 
-STT_URL = "https://api.x.ai/v1/stt"
 AUDIO_SUFFIX = ".audio.m4a"
 JSON_SUFFIX = ".transcript.json"
 TXT_SUFFIX = ".transcript.txt"
 
 # Pause (seconds) used to break word timestamps into readable lines
 SEGMENT_GAP_S = 0.85
-# Soft max words per line when gaps are short
 SEGMENT_MAX_WORDS = 16
+
+# Friendly name → Hugging Face MLX repo
+MODEL_REPOS: dict[str, str] = {
+    "tiny": "mlx-community/whisper-tiny",
+    "tiny.en": "mlx-community/whisper-tiny.en-mlx",
+    "base": "mlx-community/whisper-base-mlx",
+    "base.en": "mlx-community/whisper-base.en-mlx",
+    "small": "mlx-community/whisper-small-mlx",
+    "small.en": "mlx-community/whisper-small.en-mlx",
+    "medium": "mlx-community/whisper-medium-mlx",
+    "medium.en": "mlx-community/whisper-medium.en-mlx",
+    "turbo": "mlx-community/whisper-large-v3-turbo",
+    "large": "mlx-community/whisper-large-v3-mlx",
+    "large-v3": "mlx-community/whisper-large-v3-mlx",
+    "large-v3-turbo": "mlx-community/whisper-large-v3-turbo",
+    "distil-large-v3": "mlx-community/distil-whisper-large-v3",
+}
+
+# Fast default for long pods (segment timestamps only — good enough for clip finding).
+# medium + word_timestamps was ~10+ min on a 1.5h show; small ~sub-5 goal on M-series.
+DEFAULT_MODEL = "small"
 
 
 def die(msg: str, code: int = 1) -> None:
@@ -49,6 +67,14 @@ def load_dotenv(repo_root: Path) -> None:
         val = val.strip().strip("'").strip('"')
         if key and key not in os.environ:
             os.environ[key] = val
+
+
+def resolve_model_repo(model: str) -> str:
+    m = model.strip()
+    if m in MODEL_REPOS:
+        return MODEL_REPOS[m]
+    # Allow full HF repo or local path
+    return m
 
 
 def format_ts(seconds: float) -> str:
@@ -120,7 +146,6 @@ def parse_srt(content: str) -> list[dict[str, Any]]:
 
 
 def parse_vtt(content: str) -> list[dict[str, Any]]:
-    # Drop header / NOTE / STYLE blocks; reuse SRT-style cue parsing
     body = content.replace("\r\n", "\n")
     if body.lstrip().startswith("WEBVTT"):
         body = re.sub(r"^WEBVTT[^\n]*\n", "", body.lstrip(), count=1)
@@ -129,16 +154,13 @@ def parse_vtt(content: str) -> list[dict[str, Any]]:
 
 
 def find_sidecar_subs(video: Path) -> Path | None:
-    """Find yt-dlp-style subtitle sidecars next to the video."""
     stem = video.stem
     parent = video.parent
     candidates: list[Path] = []
-    # Exact and common language-tagged names
     for ext in (".vtt", ".srt"):
         candidates.append(parent / f"{stem}{ext}")
         for lang in ("en", "en-US", "en-GB", "eng"):
             candidates.append(parent / f"{stem}.{lang}{ext}")
-    # Broader: stem.*.vtt / stem.*.srt (prefer .en* then any)
     globbed = sorted(parent.glob(f"{stem}.*.vtt")) + sorted(
         parent.glob(f"{stem}.*.srt")
     )
@@ -255,65 +277,91 @@ def extract_audio(video: Path, audio: Path, force: bool) -> None:
         die(f"ffmpeg audio extract failed:\n{err}")
 
 
-def multipart_encode(
-    fields: list[tuple[str, str]],
-    file_field: str,
-    filename: str,
-    file_bytes: bytes,
-    content_type: str,
-) -> tuple[bytes, str]:
-    boundary = "----ytxclipper" + os.urandom(8).hex()
-    crlf = b"\r\n"
-    parts: list[bytes] = []
-    for name, value in fields:
-        parts.append(f"--{boundary}".encode())
-        parts.append(f'Content-Disposition: form-data; name="{name}"'.encode())
-        parts.append(b"")
-        parts.append(value.encode("utf-8"))
-    parts.append(f"--{boundary}".encode())
-    parts.append(
-        f'Content-Disposition: form-data; name="{file_field}"; filename="{filename}"'.encode()
-    )
-    parts.append(f"Content-Type: {content_type}".encode())
-    parts.append(b"")
-    parts.append(file_bytes)
-    parts.append(f"--{boundary}--".encode())
-    parts.append(b"")
-    body = crlf.join(parts)
-    return body, f"multipart/form-data; boundary={boundary}"
-
-
-def call_xai_stt(audio: Path, api_key: str, language: str) -> dict[str, Any]:
-    print(f"Calling xAI STT ({audio.name}, {audio.stat().st_size // 1024} KiB)…")
-    file_bytes = audio.read_bytes()
-    fields = [
-        ("format", "true"),
-        ("language", language),
-    ]
-    body, content_type = multipart_encode(
-        fields, "file", audio.name, file_bytes, "audio/mp4"
-    )
-    req = urllib.request.Request(
-        STT_URL,
-        data=body,
-        method="POST",
-        headers={
-            "Authorization": f"Bearer {api_key}",
-            "Content-Type": content_type,
-        },
-    )
+def call_mlx_whisper(
+    audio: Path,
+    *,
+    model: str,
+    language: str | None,
+) -> dict[str, Any]:
     try:
-        with urllib.request.urlopen(req, timeout=600) as resp:
-            return json.loads(resp.read().decode("utf-8"))
-    except urllib.error.HTTPError as e:
-        detail = e.read().decode("utf-8", errors="replace")[:1000]
-        die(f"xAI STT HTTP {e.code}: {detail}")
-    except urllib.error.URLError as e:
-        die(f"xAI STT request failed: {e.reason}")
+        import mlx_whisper  # type: ignore
+    except ImportError:
+        die(
+            "mlx-whisper is not installed. From the repo root:\n"
+            "  python3 -m venv .venv && source .venv/bin/activate\n"
+            "  pip install -r requirements.txt"
+        )
+
+    repo = resolve_model_repo(model)
+    # Optional cache dir (external SSD, etc.)
+    cache = os.environ.get("MODEL_DIR") or os.environ.get("HF_HOME")
+    if cache:
+        os.environ.setdefault("HF_HOME", cache)
+        os.environ.setdefault("HUGGINGFACE_HUB_CACHE", str(Path(cache) / "hub"))
+
+    # word_timestamps=True is much slower and not required for clip navigation
+    # (segment start/end is enough). Opt in with WHISPER_WORD_TIMESTAMPS=1.
+    word_ts = os.environ.get("WHISPER_WORD_TIMESTAMPS", "").strip() in ("1", "true", "yes")
+    print(
+        f"Running MLX Whisper model={model!r} repo={repo} on {audio.name}"
+        f" (word_timestamps={word_ts})…"
+    )
+    kwargs: dict[str, Any] = {
+        "path_or_hf_repo": repo,
+        "word_timestamps": word_ts,
+        "verbose": False,
+        # Single greedy pass is much faster than temperature fallbacks on clean podcast audio
+        "temperature": 0.0,
+        "condition_on_previous_text": False,
+    }
+    if language:
+        kwargs["language"] = language
+
+    try:
+        result = mlx_whisper.transcribe(str(audio), **kwargs)
+    except Exception as e:
+        die(f"MLX Whisper failed: {e}")
+
+    return result if isinstance(result, dict) else {"text": str(result), "segments": []}
+
+
+def normalize_whisper_result(result: dict[str, Any]) -> tuple[str, list[dict], list[dict]]:
+    text = (result.get("text") or "").strip()
+    words: list[dict[str, Any]] = []
+    segments_out: list[dict[str, Any]] = []
+
+    for seg in result.get("segments") or []:
+        seg_words = seg.get("words") or []
+        if seg_words:
+            for w in seg_words:
+                wtext = (w.get("word") or w.get("text") or "").strip()
+                if not wtext:
+                    continue
+                words.append(
+                    {
+                        "text": wtext,
+                        "start": float(w.get("start", seg.get("start", 0))),
+                        "end": float(w.get("end", seg.get("end", 0))),
+                    }
+                )
+        segments_out.append(
+            {
+                "start": float(seg.get("start", 0)),
+                "end": float(seg.get("end", 0)),
+                "text": (seg.get("text") or "").strip(),
+            }
+        )
+
+    if not segments_out and words:
+        segments_out = words_to_segments(words)
+    if not segments_out and text:
+        segments_out = [{"start": 0.0, "end": 0.0, "text": text}]
+
+    return text, words, segments_out
 
 
 def from_subs(video: Path, subs: Path) -> tuple[Path, Path]:
-    print(f"Using sidecar captions (skipping paid STT): {subs}")
+    print(f"Using sidecar captions (skipping local STT): {subs}")
     segments = segments_from_subs(subs)
     if not segments:
         die(f"no caption cues found in {subs}")
@@ -328,34 +376,27 @@ def from_subs(video: Path, subs: Path) -> tuple[Path, Path]:
     )
 
 
-def from_stt(video: Path, *, force_audio: bool, language: str, api_key: str) -> tuple[Path, Path]:
+def from_whisper(
+    video: Path,
+    *,
+    force_audio: bool,
+    model: str,
+    language: str | None,
+) -> tuple[Path, Path]:
     audio = video.parent / f"{video.stem}{AUDIO_SUFFIX}"
     extract_audio(video, audio, force=force_audio)
-    result = call_xai_stt(audio, api_key, language)
-    words_raw = result.get("words") or []
-    words: list[dict[str, Any]] = []
-    for w in words_raw:
-        words.append(
-            {
-                "text": w.get("text", ""),
-                "start": float(w.get("start", 0)),
-                "end": float(w.get("end", 0)),
-                **({"speaker": w["speaker"]} if "speaker" in w else {}),
-            }
-        )
-    text = (result.get("text") or "").strip()
-    segments = words_to_segments(words)
-    if not segments and text:
-        segments = [{"start": 0.0, "end": float(result.get("duration") or 0), "text": text}]
+    result = call_mlx_whisper(audio, model=model, language=language)
+    text, words, segments = normalize_whisper_result(result)
     return write_outputs(
         video,
-        source="xai-stt",
+        source="mlx-whisper",
         text=text,
         words=words,
         segments=segments,
         extra={
-            "language": result.get("language"),
-            "duration": result.get("duration"),
+            "model": model,
+            "model_repo": resolve_model_repo(model),
+            "language": language or result.get("language"),
             "audio_file": str(audio),
         },
     )
@@ -374,12 +415,17 @@ def main() -> None:
     parser.add_argument(
         "--stt",
         action="store_true",
-        help="Force xAI STT even if sidecar .vtt/.srt captions exist",
+        help="Force local Whisper even if sidecar .vtt/.srt captions exist",
+    )
+    parser.add_argument(
+        "--model",
+        default=os.environ.get("WHISPER_MODEL", DEFAULT_MODEL),
+        help=f"Whisper model size or HF repo (default: {DEFAULT_MODEL})",
     )
     parser.add_argument(
         "--language",
         default="en",
-        help="Language code for STT formatting (default: en)",
+        help="Language code for Whisper (default: en). Use '' to auto-detect.",
     )
     args = parser.parse_args()
 
@@ -408,25 +454,18 @@ def main() -> None:
             print("=== Transcript complete (YouTube/sidecar captions) ===")
             print(f"JSON: {out_json}")
             print(f"Text: {out_txt}")
-            print("Note: timestamps are approximate — for burn-in, caption the clip in FCP.")
+            print("Note: timestamps are approximate — for burn-in, caption the clip later.")
             return
 
-    api_key = os.environ.get("XAI_API_KEY", "").strip()
-    if not api_key:
-        die(
-            "XAI_API_KEY not set. Export it or add it to a .env file in the repo root.\n"
-            "  export XAI_API_KEY=...\n"
-            "Or download YouTube with --with-subs and re-run to use free captions."
-        )
-
-    out_json, out_txt = from_stt(
-        video, force_audio=args.force, language=args.language, api_key=api_key
+    lang = args.language.strip() or None
+    out_json, out_txt = from_whisper(
+        video, force_audio=args.force, model=args.model, language=lang
     )
     print()
-    print("=== Transcript complete (xAI STT) ===")
+    print(f"=== Transcript complete (MLX Whisper / {args.model}) ===")
     print(f"JSON: {out_json}")
     print(f"Text: {out_txt}")
-    print("Note: timestamps are approximate — for burn-in, caption the clip in FCP.")
+    print("Note: timestamps are approximate — for burn-in, caption the clip later.")
 
 
 if __name__ == "__main__":

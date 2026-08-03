@@ -1,0 +1,88 @@
+/**
+ * clipgenerator design tokens
+ * See app/frontend/DESIGN.md
+ */
+
+:root {
+  color-scheme: dark;
+
+  /* ——— Color: cooler graphite + single cyan-blue accent ——— */
+  --color-bg: #080a0e;
+  --color-surface: #0f131a;
+  --color-surface-raised: #161c26;
+  --color-border: #2c3545;
+  --color-border-subtle: #1c2330;
+
+  --color-text: #f0f3f8;
+  --color-text-secondary: #9aa6b8;
+  --color-text-tertiary: #6d7a8f;
+
+  --color-accent: #5eb0ff;
+  --color-accent-strong: #2f7fd4;
+  --color-accent-muted: rgba(47, 127, 212, 0.18);
+  --color-accent-ring: rgba(94, 176, 255, 0.28);
+
+  --color-success: #34d399;
+  --color-success-muted: rgba(52, 211, 153, 0.14);
+  --color-warning: #fbbf24;
+  --color-warning-muted: rgba(251, 191, 36, 0.14);
+  --color-danger: #fb7185;
+  --color-danger-muted: rgba(251, 113, 133, 0.14);
+
+  --color-clip-range: rgba(52, 211, 153, 0.12);
+  --color-playing: rgba(251, 191, 36, 0.16);
+
+  /* ——— Fonts (loaded via @fontsource in main.jsx) ——— */
+  --font-sans: "Inter", ui-sans-serif, system-ui, -apple-system, sans-serif;
+  /* Alias for any leftover mono refs — same as UI font */
+  --font-mono: var(--font-sans);
+
+  /* ——— Type scale (more stepped / readable) ——— */
+  --text-xs: 0.6875rem; /* 11 */
+  --text-sm: 0.8125rem; /* 13 */
+  --text-md: 0.875rem; /* 14 */
+  --text-lg: 1rem; /* 16 */
+  --text-xl: 1.375rem; /* 22 — source titles pop */
+  --text-2xl: 1.75rem; /* 28 — empty state */
+
+  --leading-tight: 1.2;
+  --leading-normal: 1.5;
+  --leading-relaxed: 1.6;
+
+  --weight-regular: 400;
+  --weight-medium: 500;
+  --weight-semibold: 600;
+  --weight-bold: 700;
+
+  --tracking-label: 0.08em;
+  --tracking-title: -0.03em;
+
+  /* ——— Spacing (4px grid) ——— */
+  --space-1: 0.25rem;
+  --space-2: 0.5rem;
+  --space-3: 0.75rem;
+  --space-4: 1rem;
+  --space-5: 1.25rem;
+  --space-6: 1.5rem;
+  --space-8: 2rem;
+  --space-10: 2.5rem;
+
+  /* ——— Radius ——— */
+  --radius-sm: 6px;
+  --radius-md: 10px;
+  --radius-lg: 16px;
+
+  /* ——— Elevation ——— */
+  --shadow-sm: 0 1px 0 rgba(255, 255, 255, 0.04) inset;
+  --shadow-md: 0 12px 40px rgba(0, 0, 0, 0.45);
+
+  /* ——— Controls ——— */
+  --control-h-sm: 32px;
+  --control-h-md: 38px;
+  --control-h-lg: 42px;
+
+  /* ——— Layout ——— */
+  --sidebar-w: 280px;
+  --header-h: 60px;
+  --z-header: 10;
+}

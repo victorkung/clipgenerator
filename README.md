@@ -1,206 +1,176 @@
-# yt-x-vid-downloader-transcriber
+# clipgenerator
 
-Local CLI to **download YouTube or X (Twitter) videos** and **generate searchable, timestamped transcripts**.
+Local tool: **download** a long YouTube/X video, **transcribe on-device** (MLX Whisper), then **cut many clips** with a live, highlighting transcript — and export X-ready H.264 MP4s.
 
-Typical use case: grab a video you want offline, then skim a transcript with approximate `[m:ss]` timestamps to find moments worth clipping.
+Personal daily driver. No cloud STT bill. No multi-tenant hosting.
 
-Downloads are saved as **H.264 + AAC MP4** (X-upload compatible). Transcription prefers free sidecar captions when available; otherwise it uses **xAI Speech-to-Text** with **your own API key**.
-
-## Important notes
-
-### Your own API key (required for STT)
-
-This project does **not** ship or share an API key. For paid transcription you must use **your own** [xAI API key](https://console.x.ai/):
-
-```bash
-export XAI_API_KEY="…"
-# or copy .env.example → .env and set XAI_API_KEY there (never commit .env)
+```text
+URL → download → Whisper transcript → multi-clip editor → export clips/
 ```
 
-YouTube downloads can often skip STT entirely if you pull captions:
-
-```bash
-./scripts/download.sh --with-subs "https://www.youtube.com/watch?v=VIDEO_ID"
-./scripts/transcribe.sh "videos/….mp4"
-```
-
-X posts usually have no captions, so STT (and a key) is expected.
-
-### Legal / responsible use
-
-- You are responsible for complying with **YouTube**, **X**, and **copyright** rules for any URL you download.
-- Prefer content you own, are licensed to use, or that the platform allows you to save for personal use.
-- Do not use this tool to redistribute copyrighted material or bypass access controls.
-- Keep `.env` and everything under `videos/` private — they are gitignored on purpose.
-
-### What this is (and isn’t)
-
-| This repo | Not this repo |
-|-----------|----------------|
-| Local scripts on your machine | A hosted web app or public download API |
-| BYO `XAI_API_KEY` for STT | Shared/server keys |
-| Approximate timestamps for navigation | Frame-accurate burn-in captions (use FCP on clips) |
+Release history: **[CHANGELOG.md](CHANGELOG.md)** (Keep a Changelog style). UI design system: **[app/frontend/DESIGN.md](app/frontend/DESIGN.md)**.
 
 ## Prerequisites
 
 ```bash
 brew install yt-dlp ffmpeg
+python3 -m venv .venv
+source .venv/bin/activate
+pip install -r requirements.txt
+cd app/frontend && npm install && cd ../..
 ```
 
-Also needs `python3` (macOS includes it).
+**Apple Silicon (M-series)** is expected for MLX Whisper. First transcribe downloads model weights (default **`small`**).
 
-Verify:
+## Quick start — web UI
+
+**Terminal 1 — API** (keep this running):
 
 ```bash
-yt-dlp --version
-ffmpeg -version | head -1
-python3 --version
+./scripts/serve.sh
+# → http://127.0.0.1:8787
+# Do not use RELOAD=1 while long downloads/STT are running (restarts kill jobs).
 ```
 
-## Quick start
-
-### 1) Clone and (optional) set API key
+**Terminal 2 — UI**:
 
 ```bash
-git clone https://github.com/victorkung/yt-x-vid-downloader-transcriber.git
-cd yt-x-vid-downloader-transcriber
-cp .env.example .env   # then edit: XAI_API_KEY=…
+cd app/frontend && npm run dev
+# → http://127.0.0.1:5173  (proxies /api → 8787)
 ```
 
-### 2) Download
+Then:
+
+1. Paste a YouTube or X URL → **Ingest** (download + transcribe).
+2. Wait for status **ready** (stage pipeline + progress bar).
+3. Play video; transcript highlights by time; click a line to seek.
+4. **Set start** / **Set end** from the playhead (or type `m:ss` and **Apply**).
+5. **Export clip** → `videos/…/clips/*.mp4` (H.264 + AAC, with audio).
+
+### Editing clips
+
+| Action | How |
+|--------|-----|
+| Set start | Playhead → **Set start**, or ⌥/Alt+click a transcript line |
+| Set end | Playhead → **Set end**, or Shift+click a transcript line |
+| Type times | Start/End fields → **Apply** |
+| New range on same video | **+ New clip** |
+| Rename source | Click the title or **Rename** |
+| Remove from sidebar | **×** or **Remove** (files on disk are kept) |
+
+Library state: gitignored `data/library.json` (sidebar only). Media: gitignored `videos/`.
+
+### Folder layout
+
+```text
+videos/
+  2026-08-02 All-In Podcast/
+    source.mp4
+    source.audio.m4a
+    source.transcript.json
+    source.transcript.txt
+    clips/
+      chamath-leverage-cf4c1e.mp4
+```
+
+Typical cleanup after upload: delete `source.mp4` (+ audio/transcript) to save space; later delete the whole folder. Removing a source from the UI only drops the library row, not disk files.
+
+## CLI (headless)
 
 ```bash
-./scripts/download.sh "https://www.youtube.com/watch?v=VIDEO_ID"
-./scripts/download.sh "https://x.com/user/status/STATUS_ID"
+./scripts/download.sh "https://x.com/user/status/…"
+./scripts/transcribe.sh "videos/….mp4"              # default: small
+./scripts/transcribe.sh --model turbo "videos/….mp4"
+./scripts/download.sh --with-subs "https://www.youtube.com/watch?v=…"
+./scripts/transcribe.sh "videos/….mp4"              # prefers free captions when present
 ```
 
-Files land in `videos/`. Before the transfer, the script prints **title + duration** (and a size warning if the video is long). During the transfer you get **line-by-line progress** (`%`, speed, ETA). When finished it prints path, resolution, codec, and size. If height is under 1080p, it prints a **WARNING** (common for X) but still saves the best available stream.
+## Whisper models
 
-**Note:** An X post URL can still attach a **full podcast/episode file** (e.g. ~1 hour / multi‑GB at 1080p), not just a short clip. Duration in the pre-download banner is the source of truth for how long the wait will be.
+Default is **`small`** with **segment** timestamps only (fast enough for clipping; no word-level karaoke timing).
 
-**Every download is forced to H.264 + AAC** before the script finishes (re-encode if YouTube only offered AV1/VP9).
+| Model | When |
+|-------|------|
+| **`small` (default)** | Daily use; aim for ~sub‑5 min STT on ~1.5h English pods (M-series) |
+| `turbo` | Faster/better quality balance when small mangles names |
+| `medium` | Higher accuracy; slower |
+| `large-v3` | Max accuracy; slowest / most RAM |
 
-**Speed notes (especially X / HLS):**
+Override in the UI dropdown or `--model`. Not auto-selected by video length.
 
-- Config uses **8 concurrent fragments** (`-N 8` in `config/yt-dlp.conf`). yt-dlp’s default is `1`, which serializes HLS and makes long X videos feel stuck. Override per run if needed: `./scripts/download.sh -N 16 "URL"`.
-- We prefer **H.264 HLS** over fat progressive HTTP when both exist (same 1080p can be ~1.3 GB HLS vs ~4.5 GB progressive on X).
-- Re-encode is skipped when the file is already H.264+AAC; otherwise macOS uses **VideoToolbox** hardware encode.
-- Optional: install `aria2c` (`brew install aria2`) and pass `--downloader aria2c` for some non-HLS sources — native `-N` is usually enough for X.
-- If you only need a rough offline copy for clipping, a lower ceiling is much faster, e.g.  
-  `./scripts/download.sh -f "bv*[height<=720]+ba/b" "URL"`.
-
-### 3) Transcribe
+Optional model cache (e.g. external SSD):
 
 ```bash
-./scripts/transcribe.sh "videos/Uploader - Title [id].mp4"
+# .env (never commit)
+MODEL_DIR=/Volumes/YourDrive/Open Source Models
 ```
 
-Writes next to the video:
+## Download notes
 
-| File | Purpose |
-|------|---------|
-| `<stem>.transcript.txt` | Skim with `[m:ss]` lines — find clip-worthy moments |
-| `<stem>.transcript.json` | Full payload (words/segments) for tooling |
+- Prefers ≥1080p H.264; always ensures H.264+AAC before finish
+- **8 concurrent HLS fragments** (`-N 8` in `config/yt-dlp.conf`); try `-N 16` if the CDN allows
+- Line-based download progress; X posts can attach full episodes (check duration banner)
+- `./scripts/download.sh -h`
 
-**Cost-aware path:**
+## Project layout
 
-1. Prefer free captions when present (sidecar `.vtt` / `.srt`).
-2. Otherwise extract audio and call **xAI STT** (see [xAI pricing](https://docs.x.ai/); cost scales with audio duration).
-
-Timestamps are **approximate** — good for finding moments, not for burn-in. For on-screen captions on a finished short, use **FCP auto-captions on the clipped audio**.
-
-## Quality policy (download)
-
-| Setting | Behavior |
-|---------|----------|
-| Default | Prefer **H.264 ≥ 1080**, remux to **mp4**, then **always ensure H.264 + AAC** |
-| Fallback | If nothing ≥1080 exists, download best available, still force H.264 + AAC |
-| Strict | `./scripts/download.sh --strict-1080 "URL"` fails if no ≥1080 format exists |
-
-yt-dlp **does not upscale**. Quality is limited by what the source hosts.
-
-### X upload compatibility (always applied)
-
-X rejects **AV1** / **VP9** with *“Incompatible video codecs”*. Final files always use:
-
-- **Container:** MP4  
-- **Video:** H.264 (`avc1`), yuv420p  
-- **Audio:** AAC  
-
-Pipeline:
-
-1. `yt-dlp` prefers native H.264 streams when available (faster, no re-encode).  
-2. `scripts/to-h264.sh` runs on every download and re-encodes only if needed.  
-
-Manual conversion (clips you cut yourself, or old files):
-
-```bash
-./scripts/to-h264.sh "videos/your-clip.mp4"              # in-place
-./scripts/to-h264.sh "videos/in.mp4" "videos/out.mp4"    # to new path
-```
-
-### What to expect
-
-- **YouTube:** Most modern videos offer **1080p or higher**. Output is always H.264 for X.
-- **X downloads:** Often **720p or lower**. Vertical clips are common (e.g. 1080×1920). Still forced to H.264.
-
-Defaults live in `config/yt-dlp.conf`.
-
-## Options
-
-### download.sh
-
-```bash
-./scripts/download.sh "URL"
-./scripts/download.sh --strict-1080 "URL"
-./scripts/download.sh --with-subs "URL"          # English .vtt sidecars (YouTube)
-./scripts/download.sh --cookies-from-browser chrome "URL"
-yt-dlp -F "URL"                                 # list formats
-./scripts/download.sh -f "bv*[height=1080]+ba" "URL"
-```
-
-### transcribe.sh
-
-```bash
-./scripts/transcribe.sh "videos/file.mp4"
-./scripts/transcribe.sh --force "videos/file.mp4"   # regenerate
-./scripts/transcribe.sh --stt "videos/file.mp4"     # ignore sidecar subs; use xAI
-./scripts/transcribe.sh --language en "videos/file.mp4"
-```
-
-## Layout
-
-```
-.
-├── README.md
-├── .env.example         # template for XAI_API_KEY (copy to .env)
-├── .env                 # your key — local only, gitignored
-├── config/
-│   └── yt-dlp.conf
+```text
+clipgenerator/
 ├── scripts/
-│   ├── download.sh      # URL → X-ready mp4
-│   ├── to-h264.sh       # ensure H.264 + AAC
-│   ├── transcribe.sh    # CLI entry for transcription
-│   └── transcribe.py    # audio extract / captions / xAI STT
-└── videos/              # downloads + transcript sidecars (gitignored)
+│   ├── download.sh      # yt-dlp + H.264 ensure
+│   ├── to-h264.sh
+│   ├── transcribe.sh    # MLX Whisper / sidecar captions
+│   ├── transcribe.py
+│   └── serve.sh         # local FastAPI (no auto-reload by default)
+├── app/
+│   ├── backend/         # ingest, clips, export API
+│   └── frontend/        # Vite + React UI + DESIGN.md
+├── config/yt-dlp.conf
+├── CHANGELOG.md         # release notes
+├── data/                # library.json (gitignored)
+└── videos/              # media (gitignored)
 ```
+
+## Releases
+
+We document user-facing changes in **[CHANGELOG.md](CHANGELOG.md)** under Keep a Changelog sections (`Added` / `Changed` / `Fixed`).
+
+When shipping a tagged release:
+
+```bash
+# after merging/committing on main
+git tag -a v0.2.0 -m "v0.2.0 — multi-clip UI + local Whisper"
+git push origin main --tags
+# optional: gh release create v0.2.0 --notes-file CHANGELOG.md
+```
+
+Bump the version header in `CHANGELOG.md` for each public drop.
+
+## Responsible use
+
+- You are responsible for complying with **YouTube**, **X**, and **copyright** rules for any URL you download or clip you publish.
+- Prefer content you own, are licensed to use, or that the platform allows for personal offline use.
+- This tool does **not** grant rights to redistribute others’ shows.
+- Keep `.env`, `data/`, and `videos/` private (gitignored).
+- Localhost only — do not expose the API to the public internet.
+
+## Roadmap
+
+| Release | Scope |
+|---------|--------|
+| **0.2 (this)** | Local Whisper, multi-clip UI, export with audio, design system |
+| Later | Caption burn-in, AI clip suggestions, post scheduling |
 
 ## Troubleshooting
 
-| Problem | What to try |
-|---------|-------------|
-| Download fails / 403 / “sign in” | `brew upgrade yt-dlp`, then retry with `--cookies-from-browser chrome` (or `safari` / `firefox`) |
-| Under-1080 warning | Source has no higher encode (typical on X). Use `--strict-1080` only if you want to abort |
-| Want exact 1080, not 4K | Pass e.g. `-f "bv*[height=1080]+ba/b[height=1080]"` |
-| `XAI_API_KEY not set` | Export the key, or add it to `.env`. Or use `./scripts/download.sh --with-subs` on YouTube then re-run transcribe |
-| No sidecar captions on X | Expected — X rarely has subs; transcribe will use xAI STT |
-| Transcript already exists | Pass `--force` to regenerate |
-| Path issues | Scripts resolve the repo root themselves; paths to videos can be relative or absolute |
+| Issue | Fix |
+|-------|-----|
+| `mlx-whisper is not installed` | `source .venv/bin/activate && pip install -r requirements.txt` |
+| First STT is slow | Model download; later runs use cache. Prefer `small` / `turbo`. |
+| STT / download dies mid-job | Don’t run `RELOAD=1` on the API while jobs run |
+| Fans / heat on long pods | Normal under MLX; plug in |
+| UI can’t reach API | `./scripts/serve.sh` on 8787; Vite on 5173 |
+| Export silent / broken audio | Re-export after the 0.2 fix (libx264 + AAC, accurate seek). Delete old bad clip files. |
+| Export feels stuck | Watch the yellow/green banner; long clips re-encode and take a moment |
 
-## Maintenance
-
-```bash
-brew upgrade yt-dlp ffmpeg
-```
-
-YouTube and X change their APIs periodically; keeping yt-dlp current fixes most breakage.
+Formerly known in git history as `yt-x-vid-downloader-transcriber`.
