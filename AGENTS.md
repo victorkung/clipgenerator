@@ -117,7 +117,7 @@ This file is **auto-loaded** every Grok session in this repo. Do **not** re-read
 
 ### Product (clipgenerator)
 
-- **Repo:** single public app `victorkung/clipgenerator-public` (see `docs/PUBLIC_REPO.md`). Private packs optional under gitignored `prompts/private/` only — no second private app repo required.
+- **Repo:** single public app `victorkung/clipgenerator` (see `docs/PUBLIC_REPO.md`). Agent prompts: browser localStorage + gitignored `data/` (never commit). Optional local packs under gitignored `prompts/private/`.
 - **Flow:** URL → yt-dlp download → MLX Whisper STT → multi-clip editor → H.264+AAC export under `videos/…/clips/`.
 - **Run UI:** `./scripts/serve.sh` → `:8787` · `cd app/frontend && npm run dev` → `:5173` (proxies `/api`). No `RELOAD=1` during long jobs.
 - **Layout:** `videos/YYYY-MM-DD ShowName/` — date is **ingest/posting day (today)**, not original publish date. Library: gitignored `data/library.json`.

@@ -255,6 +255,7 @@
   align-items: stretch;
   min-width: 0;
   min-height: 0;
+  height: 100%;
   overflow: hidden;
   background: var(--color-surface-sunken);
   color: var(--color-text);
@@ -443,8 +444,9 @@
 }
 
 .center-scroll {
-  flex: 1;
+  flex: 1 1 0;
   min-height: 0;
+  height: 100%;
   display: flex;
   flex-direction: column;
   align-items: stretch;
@@ -452,12 +454,13 @@
   width: 100%;
 }
 
-/* Paper fills the center pane edge-to-edge so cream never clips mid-column */
+/* Paper owns the full center pane; body scrolls inside so no dark void under content */
 .center-scroll > .paper {
-  flex: 1 1 auto;
+  flex: 1 1 0;
   width: 100%;
   max-width: none;
-  min-height: 0;
+  min-height: 100%;
+  height: 100%;
   min-width: 0;
   box-shadow: none;
   border-radius: var(--radius-sm);
@@ -470,6 +473,8 @@
 .center-scroll > .agent-flow {
   width: 100%;
   max-width: none;
+  flex: 1 1 0;
+  min-height: 0;
 }
 
 .hint-row {

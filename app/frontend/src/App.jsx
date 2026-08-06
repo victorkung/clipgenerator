@@ -77,6 +77,7 @@ That JSON is what populates the clip list in clipgenerator for trim, captions, a
 function loadSharedPrompt(key, fallback) {
   try {
     const v = localStorage.getItem(key);
+    // Empty string is a valid saved value only if the key exists; prefer non-empty.
     if (v != null && v.trim()) return v;
   } catch {
     /* ignore */
@@ -84,11 +85,21 @@ function loadSharedPrompt(key, fallback) {
   return fallback;
 }
 
+/** Persist app-wide agent prompts on this browser only (never git). */
 function saveSharedPrompt(key, value) {
   try {
     localStorage.setItem(key, value ?? "");
   } catch {
-    /* ignore */
+    /* private mode / quota — ignore */
+  }
+}
+
+function hasStoredPrompt(key) {
+  try {
+    const v = localStorage.getItem(key);
+    return v != null && v.trim().length > 0;
+  } catch {
+    return false;
   }
 }
 
@@ -378,10 +389,12 @@ export default function App() {
   const selectedIdRef = useRef(selectedId);
   const exportOwnerIdRef = useRef(null);
   const copyTimerRef = useRef(null);
+  const promptServerSyncRef = useRef(null);
 
   const refreshList = useCallback(async () => {
     const list = await api.listSources();
     setSources(list);
+    return list;
   }, []);
 
   const loadSource = useCallback(
@@ -414,8 +427,70 @@ export default function App() {
     [activeClipId, editingTitle]
   );
 
+  // Keep agent prompts on this device: write localStorage on every edit (survives reload).
   useEffect(() => {
-    refreshList().catch((e) => setError(String(e.message || e)));
+    saveSharedPrompt(LS_SUMMARY_PROMPT, summaryPromptDraft);
+  }, [summaryPromptDraft]);
+
+  useEffect(() => {
+    saveSharedPrompt(LS_CLIP_PROMPT, clipPromptDraft);
+  }, [clipPromptDraft]);
+
+  // Debounced mirror onto the active source in gitignored data/library.json (for export packages).
+  useEffect(() => {
+    if (!source?.id) return;
+    if (promptServerSyncRef.current) clearTimeout(promptServerSyncRef.current);
+    promptServerSyncRef.current = setTimeout(() => {
+      const sid = source.id;
+      const sum = summaryPromptDraft;
+      const clip = clipPromptDraft;
+      api
+        .updateSource(sid, {
+          summary_prompt_text: sum,
+          clip_prompt_text: clip,
+        })
+        .then((updated) => {
+          setSource((prev) =>
+            prev && prev.id === sid
+              ? {
+                  ...prev,
+                  summary_prompt_text: updated.summary_prompt_text ?? sum,
+                  clip_prompt_text: updated.clip_prompt_text ?? clip,
+                }
+              : prev
+          );
+        })
+        .catch(() => {
+          /* best-effort; localStorage is the source of truth for the UI */
+        });
+    }, 600);
+    return () => {
+      if (promptServerSyncRef.current) clearTimeout(promptServerSyncRef.current);
+    };
+  }, [summaryPromptDraft, clipPromptDraft, source?.id]);
+
+  useEffect(() => {
+    refreshList()
+      .then((list) => {
+        // Recover prompts from library if localStorage was cleared but library still has them.
+        if (!hasStoredPrompt(LS_SUMMARY_PROMPT)) {
+          const fromLib = (list || []).find(
+            (s) => (s.summary_prompt_text || "").trim()
+          );
+          if (fromLib?.summary_prompt_text?.trim()) {
+            setSummaryPromptDraft(fromLib.summary_prompt_text);
+            saveSharedPrompt(LS_SUMMARY_PROMPT, fromLib.summary_prompt_text);
+          }
+        }
+        if (!hasStoredPrompt(LS_CLIP_PROMPT)) {
+          const fromLib = (list || []).find((s) => (s.clip_prompt_text || "").trim());
+          if (fromLib?.clip_prompt_text?.trim()) {
+            setClipPromptDraft(fromLib.clip_prompt_text);
+            saveSharedPrompt(LS_CLIP_PROMPT, fromLib.clip_prompt_text);
+          }
+        }
+      })
+      .catch((e) => setError(String(e.message || e)));
   }, [refreshList]);
 
   useEffect(() => {
@@ -652,6 +727,7 @@ export default function App() {
   }
 
   async function saveSummaryPrompt() {
+    // Immediate flush (blur / export) — localStorage already updated via effect.
     saveSharedPrompt(LS_SUMMARY_PROMPT, summaryPromptDraft);
     if (!source) return;
     try {
@@ -1721,7 +1797,7 @@ export default function App() {
                             <span className="field__label">
                               Summary agent prompt{" "}
                               <span className="text-meta">
-                                (shared · written to 02-prompt.md)
+                                (saved on this device · written to 02-prompt.md)
                               </span>
                             </span>
                             <textarea
@@ -1730,6 +1806,7 @@ export default function App() {
                               value={summaryPromptDraft}
                               onChange={(e) => setSummaryPromptDraft(e.target.value)}
                               onBlur={saveSummaryPrompt}
+                              spellCheck={false}
                             />
                           </label>
                           <div className="clip-bar__row">
@@ -1825,7 +1902,7 @@ export default function App() {
                             <span className="field__label">
                               Clip agent prompt{" "}
                               <span className="text-meta">
-                                (shared · written to 02-prompt.md)
+                                (saved on this device · written to 02-prompt.md)
                               </span>
                             </span>
                             <textarea
@@ -1834,6 +1911,7 @@ export default function App() {
                               value={clipPromptDraft}
                               onChange={(e) => setClipPromptDraft(e.target.value)}
                               onBlur={saveClipPrompt}
+                              spellCheck={false}
                             />
                           </label>
                           <div className="clip-bar__row">

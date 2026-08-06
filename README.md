@@ -102,8 +102,8 @@ Linux/Windows: the download/export scripts may work, but **local MLX Whisper exp
 ## Install
 
 ```bash
-git clone https://github.com/victorkung/clipgenerator-public.git
-cd clipgenerator-public
+git clone https://github.com/victorkung/clipgenerator.git
+cd clipgenerator
 
 # Python env + deps (includes mlx-whisper)
 python3 -m venv .venv

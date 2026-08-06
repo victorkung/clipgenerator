@@ -23,6 +23,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- Agent handoff paper fills the center pane (no dark void under short content)
+- Agent prompts persist on-device via localStorage (every edit) + debounced library mirror; labels say “saved on this device”
+- Public repo renamed to `victorkung/clipgenerator`; private companion repo retired
 - Docs cleanup: single-repo private packs (no companion private repo required); removed superseded design plan docs
 - **Desk feedback pass:** Post is a center tab; craft = Clip → Caption → Export; no on-player caption overlay; Start/End labels; wider transcript + craft column; app max-width; center content centered; landing uses same 3-col shell
 - **Whisper allowlist:** UI and API accept **small** and **medium** only (unknown sizes fall back to small); CLI still supports more models

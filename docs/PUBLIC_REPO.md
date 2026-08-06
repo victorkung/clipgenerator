@@ -2,7 +2,7 @@
 
 clipgenerator is maintained as **one public GitHub repository** that anyone can clone and run. Personal media, credentials, and brand-specific LLM packs stay **off `main`**.
 
-Remote today: `https://github.com/victorkung/clipgenerator-public`
+Remote today: `https://github.com/victorkung/clipgenerator`
 
 ## Goals
 
@@ -38,12 +38,13 @@ Remote today: `https://github.com/victorkung/clipgenerator-public`
 
 Keep brand/editorial LLM instructions under **gitignored** `prompts/private/<your-pack>/` on this machine (or only inside your Grok/ChatGPT project).
 
-A separate `clipgenerator-private` repository is **not required**. Prefer:
+A separate private GitHub repository is **not required**. Prefer:
 
-1. Local files under `prompts/private/` (gitignored), and/or  
-2. The instructions text living in the external LLM product.
+1. Edit agent prompts in the **Agent handoff** UI — stored in browser `localStorage` on this device (and mirrored into gitignored `data/library.json` for package export).  
+2. Optional local markdown under `prompts/private/` (gitignored).  
+3. Or keep system instructions only inside the external LLM product.
 
-The app **does not load** private packs at runtime — you paste them into an external LLM.
+The app **does not load** private pack folders at runtime. Custom UI prompts never need to be committed to git.
 
 ## Contributor / maintainer checklist
 
