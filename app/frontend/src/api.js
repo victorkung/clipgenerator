@@ -54,10 +54,14 @@ export const api = {
       method: "PUT",
       body: JSON.stringify({ captions }),
     }),
-  exportClips: (sourceId, clipIds = null) =>
+  exportClips: (sourceId, clipIds = null, opts = {}) =>
     req(`/api/sources/${sourceId}/export`, {
       method: "POST",
-      body: JSON.stringify({ clip_ids: clipIds }),
+      body: JSON.stringify({
+        clip_ids: clipIds,
+        caption_style: opts.captionStyle ?? undefined,
+        burn_captions: opts.burnCaptions !== false,
+      }),
     }),
   getExportJob: (jobId) => req(`/api/export/${jobId}`),
   exportSummaryPackage: (sourceId) =>

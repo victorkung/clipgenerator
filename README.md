@@ -52,8 +52,8 @@ Mark clips yourself from the transcript. Best when you already know the moments 
 1. **Ingest** a YouTube or X URL (download + local Whisper).
 2. **Play** the source; click transcript lines to seek.
 3. **Mark** start/end with **I** / **O**, typed times, or Set start / Set end.
-4. Optionally **Generate captions** → edit in the Captions tab.
-5. **Export clip** → `videos/…/clips/*.mp4` (+ `.srt` if captions exist).
+4. Optionally **Generate captions** → edit text on the Captions tab; style the **Caption plate** in craft (serif/sans, cream/night, position). Preview on the monitor matches burn-in.
+5. **Export clip** → `videos/…/clips/*.mp4` with **burned-in** plates when cues exist, plus `.srt` sidecar always.
 
 ### 2. Agent workflow (optional)
 

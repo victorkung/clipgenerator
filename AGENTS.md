@@ -125,7 +125,7 @@ This file is **auto-loaded** every Grok session in this repo. Do **not** re-read
 - **Whisper UI / API:** `small` (default) · `medium` only. Heavier sizes still work via CLI `transcribe.py` if needed.
 - **Desk UI:** three columns — Sources+Clips rail · paper center · craft (monitor / clip trim / export). Fonts: Newsreader / Instrument Sans / IBM Plex Mono; terracotta accent.
 - **Editor:** type Start/End + Enter/Apply → seek player + scroll transcript. Keys `I`/`O` set start/end at playhead. Click transcript line seeks.
-- **Clip captions:** still scrub **source** video; **Generate captions** slices source transcript into **clip-relative** cues (0 = clip start). Center **Captions** tab edits text; export writes `.srt` sidecar (no on-player overlay; burn-in not built).
+- **Clip captions:** still scrub **source** video; **Generate captions** → clip-relative cues. Center **Captions** tab edits text; craft **Caption plate** = font/plate/position (app-wide localStorage). Monitor overlay matches burn-in. Export burns when cues exist + always writes `.srt`.
 - **Pane tabs:** Transcript · Captions · Post · **Agent handoff** (optional). Flag `CLIPGENERATOR_AGENT_FLOW` default **0**; `./scripts/serve.sh` sets **1** for daily driver.
 - **Packaging:** public `prompts/` = generic pipeline docs + clip-plan schema. Private editorial packs in **gitignored** `prompts/private/**`. App does not load packs at runtime — paste into external LLM.
 - **Agent flow steps:** brief → Summary export → paste summary URL → Clip export → Import plan → Editor.

@@ -35,7 +35,13 @@ from agent_io import (  # noqa: E402
     write_clip_export,
     write_summary_export,
 )
-from captions import cues_to_srt, normalize_cues, slice_transcript_to_clip  # noqa: E402
+from captions import (  # noqa: E402
+    cues_to_srt,
+    normalize_caption_style,
+    normalize_cues,
+    prepare_burn_overlays,
+    slice_transcript_to_clip,
+)
 from naming import clean_title, make_project_dir  # noqa: E402
 from store import Library, make_clip, make_source, _now, new_id  # noqa: E402
 
@@ -350,6 +356,10 @@ class CaptionsPut(BaseModel):
 
 class ExportBody(BaseModel):
     clip_ids: list[str] | None = None  # None = all clips on source
+    # App-wide caption plate style (viral burn-in). When omitted, defaults apply.
+    caption_style: dict[str, Any] | None = None
+    # Burn when cues exist (default True). SRT is always written when cues exist.
+    burn_captions: bool = True
 
 
 @app.get("/api/health")
@@ -1009,14 +1019,52 @@ def _set_export_job(job_id: str, **kwargs: Any) -> None:
         export_jobs[job_id] = cur
 
 
+def _probe_video_size(video: Path) -> tuple[int, int]:
+    """Return (width, height) for ASS PlayRes; fall back to 1920×1080."""
+    try:
+        r = subprocess.run(
+            [
+                "ffprobe",
+                "-v",
+                "error",
+                "-select_streams",
+                "v:0",
+                "-show_entries",
+                "stream=width,height",
+                "-of",
+                "csv=p=0:s=x",
+                str(video),
+            ],
+            capture_output=True,
+            text=True,
+            check=False,
+            timeout=30,
+        )
+        line = (r.stdout or "").strip().split("\n")[0]
+        if "x" in line:
+            w_s, h_s = line.split("x", 1)
+            w, h = int(w_s), int(h_s)
+            if w > 0 and h > 0:
+                return w, h
+    except Exception:
+        pass
+    return 1920, 1080
+
+
 def _export_clip(
     video: Path,
     clip: dict[str, Any],
     out_dir: Path,
     *,
     on_progress: Any | None = None,
+    caption_style: dict[str, Any] | None = None,
+    burn_captions: bool = True,
 ) -> Path:
-    """Cut a range and re-encode to clean H.264 + AAC (stream-safe for players/X)."""
+    """Cut a range and re-encode to clean H.264 + AAC (stream-safe for players/X).
+
+    When the clip has cues and burn_captions is True, styled ASS is burned in
+    during the same encode. SRT is written separately by the export job.
+    """
     out_dir.mkdir(parents=True, exist_ok=True)
     from naming import slugify
 
@@ -1030,14 +1078,23 @@ def _export_clip(
         raise RuntimeError("t_out must be greater than t_in")
     duration = t_out - t_in
 
+    cues = clip.get("captions") or []
+    style = normalize_caption_style(caption_style)
+    burn_dir: Path | None = None
+    overlays: list[dict[str, Any]] = []
+    if burn_captions and cues:
+        play_w, play_h = _probe_video_size(video)
+        burn_dir = out_dir / f".burn-{safe}-{short}"
+        burn_dir.mkdir(parents=True, exist_ok=True)
+        overlays = prepare_burn_overlays(
+            cues, style, video_w=play_w, video_h=play_h, work_dir=burn_dir
+        )
+
     # -ss BEFORE -i: keyframe seek (fast on long sources). Re-encode below keeps
-    # A/V usable; post-input -ss was accurate but decoded from 0→t_in first, which
-    # hung multi-hour exports and never emitted progress until seek finished.
-    # Explicit -map so audio is never dropped. Avoid h264_videotoolbox —
-    # corrupt frames / silent AAC on some X downloads.
+    # A/V usable. Caption plates are PNG overlays timed to clip-relative cues
+    # (Pillow) — works without libass. Explicit -map so audio is never dropped.
     # -progress pipe:1 emits out_time_ms=… for UI percent.
-    # Always drain stderr on a thread: if both pipes fill, ffmpeg deadlocks.
-    cmd = [
+    cmd: list[str] = [
         "ffmpeg",
         "-hide_banner",
         "-loglevel",
@@ -1047,35 +1104,68 @@ def _export_clip(
         f"{t_in:.3f}",
         "-i",
         str(video),
-        "-t",
-        f"{duration:.3f}",
-        "-map",
-        "0:v:0",
-        "-map",
-        "0:a:0?",
-        "-c:v",
-        "libx264",
-        "-preset",
-        "veryfast",
-        "-crf",
-        "20",
-        "-pix_fmt",
-        "yuv420p",
-        "-c:a",
-        "aac",
-        "-b:a",
-        "192k",
-        "-ac",
-        "2",
-        "-ar",
-        "48000",
-        "-movflags",
-        "+faststart",
-        "-progress",
-        "pipe:1",
-        "-nostats",
-        str(out),
     ]
+    for ov in overlays:
+        # Finite still so overlay doesn't hang the graph
+        cmd.extend(["-loop", "1", "-t", f"{duration:.3f}", "-i", str(ov["path"])])
+    cmd.extend(["-t", f"{duration:.3f}"])
+
+    if overlays:
+        # [0:v] base, [1:v]… plate stills. Chain overlays with enable=between.
+        n = len(overlays)
+        filter_parts: list[str] = []
+        for i in range(n):
+            filter_parts.append(f"[{i + 1}:v]format=rgba,setsar=1[p{i}]")
+        prev = "[0:v]"
+        for i, ov in enumerate(overlays):
+            out_label = "[v]" if i == n - 1 else f"[v{i}]"
+            # times are clip-relative; -ss before -i means timeline starts at 0
+            # Commas escaped for filtergraph
+            en = f"between(t\\,{ov['start']:.3f}\\,{ov['end']:.3f})"
+            filter_parts.append(
+                f"{prev}[p{i}]overlay={ov['x']}:{ov['y']}:format=auto:enable='{en}'{out_label}"
+            )
+            prev = out_label
+        filter_complex = ";".join(filter_parts)
+        cmd.extend(
+            [
+                "-filter_complex",
+                filter_complex,
+                "-map",
+                "[v]",
+                "-map",
+                "0:a:0?",
+            ]
+        )
+    else:
+        cmd.extend(["-map", "0:v:0", "-map", "0:a:0?"])
+
+    cmd.extend(
+        [
+            "-c:v",
+            "libx264",
+            "-preset",
+            "veryfast",
+            "-crf",
+            "20",
+            "-pix_fmt",
+            "yuv420p",
+            "-c:a",
+            "aac",
+            "-b:a",
+            "192k",
+            "-ac",
+            "2",
+            "-ar",
+            "48000",
+            "-movflags",
+            "+faststart",
+            "-progress",
+            "pipe:1",
+            "-nostats",
+            str(out),
+        ]
+    )
     proc = subprocess.Popen(
         cmd,
         stdout=subprocess.PIPE,
@@ -1131,10 +1221,22 @@ def _export_clip(
             proc.stderr.close()
 
     stderr = "".join(stderr_chunks)
-    if rc != 0:
-        raise RuntimeError((stderr or "ffmpeg failed")[-2000:])
-    if not out.is_file() or out.stat().st_size < 1000:
-        raise RuntimeError("export produced empty file")
+    try:
+        if rc != 0:
+            raise RuntimeError((stderr or "ffmpeg failed")[-2000:])
+        if not out.is_file() or out.stat().st_size < 1000:
+            raise RuntimeError("export produced empty file")
+    finally:
+        if burn_dir and burn_dir.is_dir():
+            for p in burn_dir.glob("*"):
+                try:
+                    p.unlink()
+                except OSError:
+                    pass
+            try:
+                burn_dir.rmdir()
+            except OSError:
+                pass
 
     # Sanity: require an audio stream when the source had one
     try:
@@ -1183,26 +1285,37 @@ def _run_export_job(
     source_id: str,
     video: Path,
     clips: list[dict[str, Any]],
+    *,
+    caption_style: dict[str, Any] | None = None,
+    burn_captions: bool = True,
 ) -> None:
     out_dir = video.parent / "clips"
     exported: list[dict[str, Any]] = []
     errors: list[str] = []
     total = len(clips)
+    style = normalize_caption_style(caption_style)
 
     try:
         for i, c in enumerate(clips):
             title = c.get("title") or c.get("id") or "clip"
             clip_base = (i / total) * 100
             clip_span = 100 / total
+            has_cues = bool(c.get("captions"))
+            burning = bool(burn_captions and has_cues)
 
-            def on_prog(pct: int, _secs: float, *, _i=i, _title=title) -> None:
+            def on_prog(pct: int, _secs: float, *, _i=i, _title=title, _burn=burning) -> None:
                 overall = int(clip_base + (pct / 100.0) * clip_span)
+                detail = (
+                    f"H.264 + AAC · burn-in · clip {_i + 1} of {total}"
+                    if _burn
+                    else f"H.264 + AAC · clip {_i + 1} of {total}"
+                )
                 _set_export_job(
                     job_id,
                     status="running",
                     percent=min(99, overall),
                     message=f"Encoding {_i + 1}/{total}: “{_title}”… {pct}%",
-                    detail=f"H.264 + AAC · clip {_i + 1} of {total}",
+                    detail=detail,
                     current_clip=_i + 1,
                     total_clips=total,
                     clip_percent=pct,
@@ -1213,15 +1326,26 @@ def _run_export_job(
                 status="running",
                 percent=int(clip_base),
                 message=f"Encoding {i + 1}/{total}: “{title}”…",
-                detail=f"Starting clip {i + 1} of {total}",
+                detail=(
+                    f"Starting clip {i + 1} of {total}"
+                    + (" · burning captions" if burning else "")
+                ),
                 current_clip=i + 1,
                 total_clips=total,
                 clip_percent=0,
             )
             try:
-                path = _export_clip(video, c, out_dir, on_progress=on_prog)
+                path = _export_clip(
+                    video,
+                    c,
+                    out_dir,
+                    on_progress=on_prog,
+                    caption_style=style,
+                    burn_captions=burn_captions,
+                )
                 cues = c.get("captions") or []
                 srt_path = None
+                # Always write SRT when cues exist (sidecar for edit / accessibility)
                 if cues:
                     srt_path = path.with_suffix(".srt")
                     srt_path.write_text(cues_to_srt(cues), encoding="utf-8")
@@ -1282,6 +1406,8 @@ def export_clips(source_id: str, body: ExportBody = ExportBody()) -> dict[str, A
     if not clips:
         raise HTTPException(400, "no clips to export")
 
+    style = normalize_caption_style(body.caption_style)
+    burn = bool(body.burn_captions)
     job_id = new_id("exp_")
     _set_export_job(
         job_id,
@@ -1290,7 +1416,8 @@ def export_clips(source_id: str, body: ExportBody = ExportBody()) -> dict[str, A
         status="queued",
         percent=0,
         message=f"Queued {len(clips)} clip(s)…",
-        detail="Preparing ffmpeg",
+        detail="Preparing ffmpeg"
+        + (" · burn-in when cues exist" if burn else " · no burn-in"),
         current_clip=0,
         total_clips=len(clips),
         clip_percent=0,
@@ -1301,9 +1428,16 @@ def export_clips(source_id: str, body: ExportBody = ExportBody()) -> dict[str, A
     threading.Thread(
         target=_run_export_job,
         args=(job_id, source_id, video, list(clips)),
+        kwargs={"caption_style": style, "burn_captions": burn},
         daemon=True,
     ).start()
-    return {"job_id": job_id, "status": "queued", "total_clips": len(clips)}
+    return {
+        "job_id": job_id,
+        "status": "queued",
+        "total_clips": len(clips),
+        "burn_captions": burn,
+        "caption_style": style,
+    }
 
 
 @app.get("/api/export/{job_id}")

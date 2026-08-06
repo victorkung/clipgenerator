@@ -21,6 +21,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Import notice** after clip-plan import (persists until dismiss / switch source)
 - Brand cut-mark glyph + **a local clip desk** tagline
 
+### Added
+
+- **Caption plate designer + burn-in:** app-wide style (serif/sans, cream/night plate, position, align, vertical nudge) saved on-device; live monitor preview matches export; export burns plates when cues exist and always writes `.srt` (Pillow PNG overlays + ffmpeg)
+
 ### Changed
 
 - Agent handoff paper fills the center pane (no dark void under short content)

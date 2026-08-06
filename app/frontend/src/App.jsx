@@ -30,6 +30,70 @@ const SHORT_SOURCE_SECS = 90;
 
 const LS_SUMMARY_PROMPT = "clipgenerator.agent.summaryPrompt";
 const LS_CLIP_PROMPT = "clipgenerator.agent.clipPrompt";
+const LS_CAPTION_STYLE = "clipgenerator.captionStyle";
+
+/** App-wide burn-in style (viral plate — not Desk chrome). Saved on this device. */
+const DEFAULT_CAPTION_STYLE = {
+  font: "serif", // serif | sans
+  plate: "cream", // cream | night
+  anchor: "bottom", // top | middle | lower_third | bottom
+  align: "center", // left | center | right
+  offset_y: 0,
+  font_size: 0.052,
+  max_width: 0.86,
+};
+
+function loadCaptionStyle() {
+  try {
+    const raw = localStorage.getItem(LS_CAPTION_STYLE);
+    if (!raw) return { ...DEFAULT_CAPTION_STYLE };
+    const parsed = JSON.parse(raw);
+    return normalizeCaptionStyleClient(parsed);
+  } catch {
+    return { ...DEFAULT_CAPTION_STYLE };
+  }
+}
+
+function normalizeCaptionStyleClient(raw) {
+  const base = { ...DEFAULT_CAPTION_STYLE };
+  if (!raw || typeof raw !== "object") return base;
+  if (raw.font === "serif" || raw.font === "sans") base.font = raw.font;
+  if (raw.plate === "cream" || raw.plate === "night") base.plate = raw.plate;
+  if (["top", "middle", "lower_third", "bottom"].includes(raw.anchor)) {
+    base.anchor = raw.anchor;
+  }
+  if (["left", "center", "right"].includes(raw.align)) base.align = raw.align;
+  const oy = Number(raw.offset_y);
+  if (!Number.isNaN(oy)) base.offset_y = Math.max(-0.2, Math.min(0.2, oy));
+  const fs = Number(raw.font_size);
+  if (!Number.isNaN(fs)) base.font_size = Math.max(0.03, Math.min(0.09, fs));
+  const mw = Number(raw.max_width);
+  if (!Number.isNaN(mw)) base.max_width = Math.max(0.5, Math.min(0.95, mw));
+  return base;
+}
+
+function saveCaptionStyle(style) {
+  try {
+    localStorage.setItem(LS_CAPTION_STYLE, JSON.stringify(style));
+  } catch {
+    /* ignore */
+  }
+}
+
+/** Y position as fraction of frame (matches backend ASS layout). */
+function captionAnchorY(style) {
+  const base = {
+    top: 0.1,
+    middle: 0.5,
+    lower_third: 0.72,
+    bottom: 0.88,
+  }[style.anchor || "bottom"];
+  return Math.max(0.06, Math.min(0.94, base + (Number(style.offset_y) || 0)));
+}
+
+function captionAnchorX(style) {
+  return { left: 0.12, center: 0.5, right: 0.88 }[style.align || "center"];
+}
 
 /** Default summary-agent prompt (shared across all sources; editable). */
 const DEFAULT_SUMMARY_PROMPT = `# Summary post generation
@@ -379,6 +443,7 @@ export default function App() {
   const [clipPromptDraft, setClipPromptDraft] = useState(() =>
     loadSharedPrompt(LS_CLIP_PROMPT, DEFAULT_CLIP_PROMPT)
   );
+  const [captionStyle, setCaptionStyle] = useState(() => loadCaptionStyle());
   const [summaryUrlDraft, setSummaryUrlDraft] = useState("");
   const [importNotice, setImportNotice] = useState(null);
   const [retryBusy, setRetryBusy] = useState(false);
@@ -390,6 +455,12 @@ export default function App() {
   const exportOwnerIdRef = useRef(null);
   const copyTimerRef = useRef(null);
   const promptServerSyncRef = useRef(null);
+  const [videoBox, setVideoBox] = useState({
+    left: 0,
+    top: 0,
+    width: 0,
+    height: 0,
+  });
 
   const refreshList = useCallback(async () => {
     const list = await api.listSources();
@@ -435,6 +506,51 @@ export default function App() {
   useEffect(() => {
     saveSharedPrompt(LS_CLIP_PROMPT, clipPromptDraft);
   }, [clipPromptDraft]);
+
+  // App-wide caption plate style (burn-in + preview)
+  useEffect(() => {
+    saveCaptionStyle(captionStyle);
+  }, [captionStyle]);
+
+  function patchCaptionStyle(partial) {
+    setCaptionStyle((prev) => normalizeCaptionStyleClient({ ...prev, ...partial }));
+  }
+
+  /** Map overlay to the letterboxed video picture (object-fit: contain). */
+  const measureVideoBox = useCallback(() => {
+    const v = videoRef.current;
+    if (!v) return;
+    const cw = v.clientWidth;
+    const ch = v.clientHeight;
+    const vw = v.videoWidth || 0;
+    const vh = v.videoHeight || 0;
+    if (!cw || !ch || !vw || !vh) {
+      setVideoBox({ left: 0, top: 0, width: cw, height: ch });
+      return;
+    }
+    const scale = Math.min(cw / vw, ch / vh);
+    const width = vw * scale;
+    const height = vh * scale;
+    setVideoBox({
+      left: (cw - width) / 2,
+      top: (ch - height) / 2,
+      width,
+      height,
+    });
+  }, []);
+
+  useEffect(() => {
+    measureVideoBox();
+    const v = videoRef.current;
+    if (!v) return undefined;
+    const onMeta = () => measureVideoBox();
+    v.addEventListener("loadedmetadata", onMeta);
+    window.addEventListener("resize", measureVideoBox);
+    return () => {
+      v.removeEventListener("loadedmetadata", onMeta);
+      window.removeEventListener("resize", measureVideoBox);
+    };
+  }, [measureVideoBox, source?.id, source?.video_path, source?.status]);
 
   // Debounced mirror onto the active source in gitignored data/library.json (for export packages).
   useEffect(() => {
@@ -988,7 +1104,10 @@ export default function App() {
     setExportStatusOpen(true);
     setExportMsg(label || "Starting export…");
     try {
-      const started = await api.exportClips(ownerId, clipIds);
+      const started = await api.exportClips(ownerId, clipIds, {
+        captionStyle,
+        burnCaptions: true, // burn whenever cues exist
+      });
       const jobId = started.job_id;
       if (!jobId) throw new Error("export did not return a job id");
 
@@ -2169,10 +2288,11 @@ export default function App() {
                             <div className="caption-empty">
                               <p className="caption-empty__hint">
                                 Captions are built from the source transcript for this
-                                clip&apos;s in/out. You still scrub the{" "}
-                                <strong>source</strong> video; cue times are 0-based so
-                                they match the exported file. Burn-in is not built —
-                                export writes an .srt sidecar.
+                                clip&apos;s in/out. Scrub the <strong>source</strong>{" "}
+                                video; cue times are 0-based so they match export.
+                                Style the plate in craft (font, cream/night, position).
+                                Export burns the plate when cues exist and always
+                                writes an .srt sidecar.
                               </p>
                               <button
                                 type="button"
@@ -2270,7 +2390,8 @@ export default function App() {
                                   Save captions
                                 </button>
                                 <p className="caption-note">
-                                  SRT beside the mp4 · burn-in is not built
+                                  Export burns the plate + writes .srt · style in
+                                  craft → Caption plate
                                 </p>
                               </div>
                             </>
@@ -2417,6 +2538,40 @@ export default function App() {
                   controls
                   onTimeUpdate={(e) => setCurrentTime(e.target.currentTime)}
                 />
+                {activeCaption?.text && videoBox.width > 0 ? (
+                  <div
+                    className="caption-overlay"
+                    aria-hidden
+                    style={{
+                      left: videoBox.left,
+                      top: videoBox.top,
+                      width: videoBox.width,
+                      height: videoBox.height,
+                    }}
+                  >
+                    <div
+                      className={[
+                        "caption-overlay__plate",
+                        `caption-overlay__plate--${captionStyle.font === "sans" ? "sans" : "serif"}`,
+                        `caption-overlay__plate--${captionStyle.plate === "night" ? "night" : "cream"}`,
+                        `caption-overlay__plate--align-${captionStyle.align || "center"}`,
+                      ].join(" ")}
+                      style={{
+                        left: `${captionAnchorX(captionStyle) * 100}%`,
+                        top: `${captionAnchorY(captionStyle) * 100}%`,
+                        maxWidth: `${(captionStyle.max_width || 0.86) * 100}%`,
+                        fontSize: Math.max(
+                          11,
+                          Math.round(
+                            (captionStyle.font_size || 0.052) * videoBox.height
+                          )
+                        ),
+                      }}
+                    >
+                      {activeCaption.text}
+                    </div>
+                  </div>
+                ) : null}
                 <div
                   className={`monitor__badge ${inRange ? "monitor__badge--in" : ""}`}
                 >
@@ -2636,7 +2791,94 @@ export default function App() {
 
               <div className="craft-zone craft-zone--captions">
                 <div className="craft-zone__head">
-                  <h3 className="craft-zone__title">Caption</h3>
+                  <h3 className="craft-zone__title">Caption plate</h3>
+                </div>
+                <div className="caption-plate-controls">
+                  <div className="caption-plate-controls__row">
+                    <label className="field">
+                      <span className="field__label">Type</span>
+                      <select
+                        className="select"
+                        value={captionStyle.font}
+                        onChange={(e) =>
+                          patchCaptionStyle({ font: e.target.value })
+                        }
+                      >
+                        <option value="serif">Serif · bold</option>
+                        <option value="sans">Sans · bold</option>
+                      </select>
+                    </label>
+                    <label className="field">
+                      <span className="field__label">Plate</span>
+                      <select
+                        className="select"
+                        value={captionStyle.plate}
+                        onChange={(e) =>
+                          patchCaptionStyle({ plate: e.target.value })
+                        }
+                      >
+                        <option value="cream">Cream</option>
+                        <option value="night">Night</option>
+                      </select>
+                    </label>
+                  </div>
+                  <div className="caption-plate-controls__row">
+                    <label className="field">
+                      <span className="field__label">Position</span>
+                      <select
+                        className="select"
+                        value={captionStyle.anchor}
+                        onChange={(e) =>
+                          patchCaptionStyle({ anchor: e.target.value })
+                        }
+                      >
+                        <option value="bottom">Bottom</option>
+                        <option value="lower_third">Lower third</option>
+                        <option value="middle">Middle</option>
+                        <option value="top">Top</option>
+                      </select>
+                    </label>
+                    <label className="field">
+                      <span className="field__label">Align</span>
+                      <select
+                        className="select"
+                        value={captionStyle.align}
+                        onChange={(e) =>
+                          patchCaptionStyle({ align: e.target.value })
+                        }
+                      >
+                        <option value="left">Left</option>
+                        <option value="center">Center</option>
+                        <option value="right">Right</option>
+                      </select>
+                    </label>
+                  </div>
+                  <label className="field caption-plate-controls__row--full">
+                    <span className="field__label">Nudge vertical</span>
+                    <div className="caption-plate-controls__nudge">
+                      <input
+                        type="range"
+                        min={-20}
+                        max={20}
+                        step={1}
+                        value={Math.round((captionStyle.offset_y || 0) * 100)}
+                        onChange={(e) =>
+                          patchCaptionStyle({
+                            offset_y: Number(e.target.value) / 100,
+                          })
+                        }
+                      />
+                      <span className="caption-plate-controls__nudge-val">
+                        {(captionStyle.offset_y || 0) > 0 ? "+" : ""}
+                        {Math.round((captionStyle.offset_y || 0) * 100)}%
+                      </span>
+                    </div>
+                  </label>
+                  <p className="caption-plate-controls__hint">
+                    Preview on the monitor matches export burn-in. Style is saved
+                    on this device. Export burns when cues exist and always writes
+                    an .srt sidecar.
+                  </p>
                 </div>
                 <div className="clip-caption-actions">
                   <button
@@ -2657,7 +2899,7 @@ export default function App() {
                     onClick={() => setPaneTab("captions")}
                     disabled={!activeClip}
                   >
-                    Edit captions
+                    Edit text
                     {clipCaptions.length ? ` (${clipCaptions.length})` : ""}
                   </button>
                 </div>

@@ -529,6 +529,8 @@
   background: var(--color-video-bg);
   border-bottom: 1px solid var(--color-border);
   overflow: hidden;
+  /* cqh sizing for caption plate preview */
+  container-type: size;
 }
 
 .monitor video {
@@ -559,29 +561,111 @@
   color: var(--color-warning-text);
 }
 
+/* Burn-in preview — mirrors export plate (viral, not Desk chrome) */
 .caption-overlay {
   position: absolute;
-  left: 0;
-  right: 0;
-  bottom: 22px;
-  display: flex;
-  justify-content: center;
-  pointer-events: none;
-  padding: 0 var(--space-5);
   z-index: 2;
+  pointer-events: none;
+  /* left/top/width/height set inline to the letterboxed video picture */
 }
 
-.caption-overlay__text {
-  max-width: min(22rem, 92%);
-  padding: 0;
-  background: transparent;
-  color: #fff;
-  font-family: var(--font-serif);
-  font-size: 11.5px;
-  font-weight: 400;
-  line-height: 1.35;
+.caption-overlay__plate {
+  position: absolute;
+  max-width: 86%;
+  transform: translate(-50%, -50%);
+  padding: 0.35em 0.55em;
+  border-radius: 2px;
+  font-weight: 700;
+  line-height: 1.25;
   text-align: center;
-  text-shadow: 0 1px 3px #000;
+  word-wrap: break-word;
+  /* Size relative to monitor height ≈ fraction of frame */
+  font-size: clamp(11px, 5.2vh, 22px);
+  box-shadow: 0 1px 0 rgba(0, 0, 0, 0.25);
+}
+
+.caption-overlay__plate--serif {
+  font-family: Georgia, "Times New Roman", ui-serif, serif;
+}
+
+.caption-overlay__plate--sans {
+  font-family: Arial, Helvetica, ui-sans-serif, sans-serif;
+}
+
+.caption-overlay__plate--cream {
+  background: rgba(244, 239, 228, 0.92);
+  color: #1a1814;
+}
+
+.caption-overlay__plate--night {
+  background: rgba(10, 10, 10, 0.9);
+  color: #f4efe4;
+}
+
+.caption-overlay__plate--align-left {
+  text-align: left;
+}
+
+.caption-overlay__plate--align-center {
+  text-align: center;
+}
+
+.caption-overlay__plate--align-right {
+  text-align: right;
+}
+
+/* Craft: Caption plate style controls */
+.caption-plate-controls {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-4);
+}
+
+.caption-plate-controls__row {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: var(--space-3);
+}
+
+.caption-plate-controls__row--full {
+  grid-template-columns: 1fr;
+}
+
+.caption-plate-controls .field__label {
+  font-size: 10px;
+}
+
+.caption-plate-controls .select,
+.caption-plate-controls .input {
+  height: var(--control-h-md);
+  font-size: 12px;
+}
+
+.caption-plate-controls__hint {
+  margin: 0;
+  font-family: var(--font-sans);
+  font-size: 11px;
+  line-height: 1.4;
+  color: var(--color-text-faint);
+}
+
+.caption-plate-controls__nudge {
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+}
+
+.caption-plate-controls__nudge input[type="range"] {
+  flex: 1;
+  accent-color: var(--color-accent);
+}
+
+.caption-plate-controls__nudge-val {
+  font-family: var(--font-mono);
+  font-size: 11px;
+  color: var(--color-text-tertiary);
+  min-width: 3.2rem;
+  text-align: right;
 }
 
 .craft-col__empty {
