@@ -163,6 +163,9 @@ def make_clip(
         "notes": "",
         "status": "draft",  # draft | rendered
         "export_path": None,
+        # Clip-relative captions (0 = clip start). Generated from source transcript.
+        "captions": [],
+        "captions_meta": None,  # {t_in, t_out, generated_at, count}
         "created_at": now,
         "updated_at": now,
     }

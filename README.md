@@ -59,7 +59,8 @@ Then:
 2. Wait for status **ready** (stage pipeline + progress bar).
 3. Play video; transcript highlights by time; click a line to seek.
 4. **Set start** / **Set end** from the playhead, or type `m:ss` / `h:mm:ss` (Enter or **Apply** seeks the player + transcript).
-5. **Export clip** → `videos/…/clips/*.mp4` (H.264 + AAC, with audio).
+5. **Generate captions** (optional) → edit in the **Captions** tab; overlay previews on the player while scrubbing the **source** video.
+6. **Export clip** → `videos/…/clips/*.mp4` (H.264 + AAC). If captions exist, also writes a matching `.srt` (times from clip start). Burn-in onto the video is not implemented yet.
 
 ### Editing clips
 
@@ -68,9 +69,12 @@ Then:
 | Set start | Playhead → **Set start**, or ⌥/Alt+click a transcript line |
 | Set end | Playhead → **Set end**, or Shift+click a transcript line |
 | Type times | Start/End fields → Enter or **Apply** (jumps player + transcript to that time) |
+| Captions | **Generate captions** on the active clip → **Captions** tab to edit text; click a cue time to seek |
 | New range on same video | **+ New clip** |
 | Rename source | Click the title or **Rename** |
 | Remove from sidebar | **×** or **Remove** (files on disk are kept) |
+
+**Caption workflow note:** There is no separate clip-only player yet. You always scrub the long source; captions are stored **relative to the clip’s start** so they match the exported file. If you change in/out after generating, regenerate captions.
 
 Library state: gitignored `data/library.json` (sidebar only). Media: gitignored `videos/`.
 

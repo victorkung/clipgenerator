@@ -123,9 +123,10 @@ This file is **auto-loaded** every Grok session in this repo. Do **not** re-read
 - **Stack:** bash + yt-dlp + ffmpeg · FastAPI `app/backend` · Vite/React `app/frontend` · STT local MLX only (no cloud key on happy path).
 - **Whisper UI order (least → most power):** `small` (default, any length) → `medium` (~≤45–60m / better names) → `turbo` (long + accuracy) → `large-v3` (short/hard only).
 - **Editor:** type Start/End + Enter/Apply → seek player + scroll transcript. ⌥ transcript line = set start; ⇧ = set end.
+- **Clip captions:** still scrub **source** video; **Generate captions** slices source transcript into **clip-relative** cues (0 = clip start). Right pane **Captions** tab edits text; overlay previews on player; export writes `.srt` sidecar. Burn-in not yet.
 - **X gotcha:** some posts are **promo clips** (~30s); full episode may live on YouTube/Spotify/RSS — duration in UI is truth for what downloaded.
 - **Never commit:** `.env`, `videos/`, `data/`, `.venv/`, transcripts/audio sidecars.
 - **UI rule:** tokens/classes in `app/frontend/src/styles/` only — no one-off colors/sizes.
-- **Not built yet:** caption burn-in, AI clip suggestions, post scheduling.
+- **Not built yet:** caption burn-in on export, AI clip suggestions, post scheduling.
 
 When unsure whether a path is public-safe, **ask the human** instead of committing.

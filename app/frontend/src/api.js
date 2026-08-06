@@ -38,11 +38,21 @@ export const api = {
     }),
   deleteClip: (sourceId, clipId) =>
     req(`/api/sources/${sourceId}/clips/${clipId}`, { method: "DELETE" }),
+  generateCaptions: (sourceId, clipId) =>
+    req(`/api/sources/${sourceId}/clips/${clipId}/captions/generate`, {
+      method: "POST",
+    }),
+  saveCaptions: (sourceId, clipId, captions) =>
+    req(`/api/sources/${sourceId}/clips/${clipId}/captions`, {
+      method: "PUT",
+      body: JSON.stringify({ captions }),
+    }),
   exportClips: (sourceId, clipIds = null) =>
     req(`/api/sources/${sourceId}/export`, {
       method: "POST",
       body: JSON.stringify({ clip_ids: clipIds }),
     }),
+  getExportJob: (jobId) => req(`/api/export/${jobId}`),
   mediaUrl: (absPath) => `/api/media?path=${encodeURIComponent(absPath)}`,
 };
 

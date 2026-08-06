@@ -69,11 +69,15 @@ Do not introduce new hex values in component CSS unless adding a named token.
 | `.input` / `.select` | pair with `.field` label |
 | `.pill` | `--ready` · `--error` · `--progress` |
 | `.panel` | surface card |
-| `.banner` | `--success` · `--warning` · `--error` · `--info` |
+| `.banner` | `--success` · `--warning` · `--error` · `--info` (global errors only; export uses `.export-status`) |
+| `.export-status` | `--busy` · `--done` — local progress under clip-bar export actions |
 | `.list-item` | `--active` |
 | `.section-label` | overline + optional count |
 | `.transcript-line` | `--active` · `--in-range` |
 | `.pipeline` | progress steps + bar |
+| `.pane-tab` | right-column tabs (`--active`); pair with `.pane-tabs` |
+| `.caption-overlay` | burn-style preview over `.video-shell` |
+| `.caption-row` | editable caption cue (`--active` when playhead matches) |
 
 ## Do / don’t
 

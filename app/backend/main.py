@@ -27,8 +27,9 @@ DOWNLOAD_SH = SCRIPTS / "download.sh"
 TRANSCRIBE_PY = SCRIPTS / "transcribe.py"
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
+from captions import cues_to_srt, normalize_cues, slice_transcript_to_clip  # noqa: E402
 from naming import clean_title, make_project_dir  # noqa: E402
-from store import Library, make_clip, make_source  # noqa: E402
+from store import Library, make_clip, make_source, _now, new_id  # noqa: E402
 
 VIDEOS.mkdir(exist_ok=True)
 DATA.mkdir(exist_ok=True)
@@ -37,6 +38,9 @@ lib = Library(LIBRARY_PATH)
 jobs_lock = threading.Lock()
 # source_id → {stage, message, percent, stages, detail, eta_s?}
 job_status: dict[str, dict[str, Any]] = {}
+# export_job_id → progress / result for clip exports
+export_jobs: dict[str, dict[str, Any]] = {}
+export_jobs_lock = threading.Lock()
 
 PIPELINE_STAGES = [
     {"id": "queued", "label": "Queued"},
@@ -296,6 +300,13 @@ class ClipUpdate(BaseModel):
     t_out: float | None = None
     notes: str | None = None
     status: str | None = None
+    captions: list[dict[str, Any]] | None = None
+
+
+class CaptionsPut(BaseModel):
+    """Full replace of clip-relative caption cues."""
+
+    captions: list[dict[str, Any]] = Field(default_factory=list)
 
 
 class ExportBody(BaseModel):
@@ -624,7 +635,15 @@ def create_clip(source_id: str, body: ClipCreate) -> dict[str, Any]:
 
 @app.patch("/api/sources/{source_id}/clips/{clip_id}")
 def patch_clip(source_id: str, clip_id: str, body: ClipUpdate) -> dict[str, Any]:
-    patch = {k: v for k, v in body.model_dump().items() if v is not None}
+    raw = body.model_dump(exclude_unset=True)
+    patch: dict[str, Any] = {}
+    for k, v in raw.items():
+        if v is None and k != "captions":
+            continue
+        if k == "captions":
+            patch["captions"] = normalize_cues(v)
+        else:
+            patch[k] = v
     if not patch:
         raise HTTPException(400, "no fields to update")
     out = lib.update_clip(source_id, clip_id, patch)
@@ -640,12 +659,105 @@ def remove_clip(source_id: str, clip_id: str) -> dict[str, str]:
     return {"status": "deleted"}
 
 
-def _export_clip(video: Path, clip: dict[str, Any], out_dir: Path) -> Path:
+def _get_clip(source: dict[str, Any], clip_id: str) -> dict[str, Any] | None:
+    for c in source.get("clips") or []:
+        if c.get("id") == clip_id:
+            return c
+    return None
+
+
+@app.post("/api/sources/{source_id}/clips/{clip_id}/captions/generate")
+def generate_clip_captions(source_id: str, clip_id: str) -> dict[str, Any]:
+    """
+    Slice the source Whisper transcript into clip-relative captions.
+
+    Workflow: still scrub on the **source** video; captions times are 0-based
+    from the clip's t_in so they match the exported MP4 and a future burn-in step.
+    """
+    s = lib.get_source(source_id)
+    if not s:
+        raise HTTPException(404, "source not found")
+    clip = _get_clip(s, clip_id)
+    if not clip:
+        raise HTTPException(404, "clip not found")
+    t_in = float(clip.get("t_in") or 0.0)
+    t_out = float(clip.get("t_out") or 0.0)
+    if t_out <= t_in:
+        raise HTTPException(400, "clip end must be after start")
+
+    tpath = s.get("transcript_json")
+    data = _load_transcript(Path(tpath) if tpath else None)
+    if not data:
+        raise HTTPException(400, "source transcript not ready — ingest/transcribe first")
+
+    segments = data.get("segments") or []
+    cues = slice_transcript_to_clip(segments, t_in=t_in, t_out=t_out)
+    meta = {
+        "t_in": t_in,
+        "t_out": t_out,
+        "generated_at": _now(),
+        "count": len(cues),
+        "source": "transcript",
+    }
+    out = lib.update_clip(
+        source_id,
+        clip_id,
+        {"captions": cues, "captions_meta": meta},
+    )
+    if not out:
+        raise HTTPException(404, "clip not found")
+    return out
+
+
+@app.put("/api/sources/{source_id}/clips/{clip_id}/captions")
+def put_clip_captions(source_id: str, clip_id: str, body: CaptionsPut) -> dict[str, Any]:
+    """Save edited clip-relative caption cues (text + timing)."""
+    s = lib.get_source(source_id)
+    if not s:
+        raise HTTPException(404, "source not found")
+    clip = _get_clip(s, clip_id)
+    if not clip:
+        raise HTTPException(404, "clip not found")
+    cues = normalize_cues(body.captions)
+    meta = dict(clip.get("captions_meta") or {})
+    meta.update(
+        {
+            "count": len(cues),
+            "edited_at": _now(),
+            "t_in": float(clip.get("t_in") or meta.get("t_in") or 0.0),
+            "t_out": float(clip.get("t_out") or meta.get("t_out") or 0.0),
+        }
+    )
+    out = lib.update_clip(
+        source_id,
+        clip_id,
+        {"captions": cues, "captions_meta": meta},
+    )
+    if not out:
+        raise HTTPException(404, "clip not found")
+    return out
+
+
+def _set_export_job(job_id: str, **kwargs: Any) -> None:
+    with export_jobs_lock:
+        cur = export_jobs.get(job_id, {})
+        cur.update(kwargs)
+        export_jobs[job_id] = cur
+
+
+def _export_clip(
+    video: Path,
+    clip: dict[str, Any],
+    out_dir: Path,
+    *,
+    on_progress: Any | None = None,
+) -> Path:
     """Cut a range and re-encode to clean H.264 + AAC (stream-safe for players/X)."""
     out_dir.mkdir(parents=True, exist_ok=True)
     from naming import slugify
 
     safe = slugify(clip.get("title") or "clip", max_len=40) or "clip"
+    # Last 6 chars of clip id — keeps filenames unique if two clips share a title
     short = (clip.get("id") or "x")[-6:]
     out = out_dir / f"{safe}-{short}.mp4"
     t_in = float(clip["t_in"])
@@ -654,17 +766,23 @@ def _export_clip(video: Path, clip: dict[str, Any], out_dir: Path) -> Path:
         raise RuntimeError("t_out must be greater than t_in")
     duration = t_out - t_in
 
-    # Important: put -ss AFTER -i for accurate A/V sync on long X HLS sources.
-    # Explicit -map so audio is never dropped. Avoid h264_videotoolbox here —
-    # it produced corrupt frames / silent-or-broken AAC on some X downloads.
+    # -ss BEFORE -i: keyframe seek (fast on long sources). Re-encode below keeps
+    # A/V usable; post-input -ss was accurate but decoded from 0→t_in first, which
+    # hung multi-hour exports and never emitted progress until seek finished.
+    # Explicit -map so audio is never dropped. Avoid h264_videotoolbox —
+    # corrupt frames / silent AAC on some X downloads.
+    # -progress pipe:1 emits out_time_ms=… for UI percent.
+    # Always drain stderr on a thread: if both pipes fill, ffmpeg deadlocks.
     cmd = [
         "ffmpeg",
         "-hide_banner",
+        "-loglevel",
+        "error",
         "-y",
-        "-i",
-        str(video),
         "-ss",
         f"{t_in:.3f}",
+        "-i",
+        str(video),
         "-t",
         f"{duration:.3f}",
         "-map",
@@ -689,11 +807,68 @@ def _export_clip(video: Path, clip: dict[str, Any], out_dir: Path) -> Path:
         "48000",
         "-movflags",
         "+faststart",
+        "-progress",
+        "pipe:1",
+        "-nostats",
         str(out),
     ]
-    proc = subprocess.run(cmd, capture_output=True, text=True)
-    if proc.returncode != 0:
-        raise RuntimeError((proc.stderr or proc.stdout or "ffmpeg failed")[-2000:])
+    proc = subprocess.Popen(
+        cmd,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+        bufsize=1,
+    )
+    assert proc.stdout is not None
+    assert proc.stderr is not None
+    stderr_chunks: list[str] = []
+
+    def _drain_stderr() -> None:
+        try:
+            for chunk in proc.stderr:
+                stderr_chunks.append(chunk)
+        except Exception:
+            pass
+
+    drain = threading.Thread(target=_drain_stderr, daemon=True)
+    drain.start()
+
+    last_pct = -1
+    try:
+        for line in proc.stdout:
+            line = line.strip()
+            if not line.startswith("out_time_ms="):
+                continue
+            raw = line.split("=", 1)[1].strip()
+            if raw in ("N/A", ""):
+                continue
+            try:
+                # ffmpeg may report microseconds as int; treat as µs if huge
+                val = int(raw)
+                if val > 10_000_000_000:  # absurd — skip
+                    continue
+                # out_time_ms is milliseconds in modern ffmpeg
+                secs = val / 1000.0
+                if secs > duration * 50:  # wrong unit (µs) fallback
+                    secs = val / 1_000_000.0
+                frac = min(0.99, max(0.0, secs / max(duration, 0.001)))
+                pct = int(frac * 100)
+                if on_progress and pct != last_pct:
+                    last_pct = pct
+                    on_progress(pct, secs)
+            except ValueError:
+                continue
+    finally:
+        rc = proc.wait()
+        drain.join(timeout=5)
+        if proc.stdout:
+            proc.stdout.close()
+        if proc.stderr:
+            proc.stderr.close()
+
+    stderr = "".join(stderr_chunks)
+    if rc != 0:
+        raise RuntimeError((stderr or "ffmpeg failed")[-2000:])
     if not out.is_file() or out.stat().st_size < 1000:
         raise RuntimeError("export produced empty file")
 
@@ -734,11 +909,102 @@ def _export_clip(video: Path, clip: dict[str, Any], out_dir: Path) -> Path:
     except subprocess.CalledProcessError:
         pass
 
+    if on_progress:
+        on_progress(100, duration)
     return out
+
+
+def _run_export_job(
+    job_id: str,
+    source_id: str,
+    video: Path,
+    clips: list[dict[str, Any]],
+) -> None:
+    out_dir = video.parent / "clips"
+    exported: list[dict[str, Any]] = []
+    errors: list[str] = []
+    total = len(clips)
+
+    try:
+        for i, c in enumerate(clips):
+            title = c.get("title") or c.get("id") or "clip"
+            clip_base = (i / total) * 100
+            clip_span = 100 / total
+
+            def on_prog(pct: int, _secs: float, *, _i=i, _title=title) -> None:
+                overall = int(clip_base + (pct / 100.0) * clip_span)
+                _set_export_job(
+                    job_id,
+                    status="running",
+                    percent=min(99, overall),
+                    message=f"Encoding {_i + 1}/{total}: “{_title}”… {pct}%",
+                    detail=f"H.264 + AAC · clip {_i + 1} of {total}",
+                    current_clip=_i + 1,
+                    total_clips=total,
+                    clip_percent=pct,
+                )
+
+            _set_export_job(
+                job_id,
+                status="running",
+                percent=int(clip_base),
+                message=f"Encoding {i + 1}/{total}: “{title}”…",
+                detail=f"Starting clip {i + 1} of {total}",
+                current_clip=i + 1,
+                total_clips=total,
+                clip_percent=0,
+            )
+            try:
+                path = _export_clip(video, c, out_dir, on_progress=on_prog)
+                cues = c.get("captions") or []
+                srt_path = None
+                if cues:
+                    srt_path = path.with_suffix(".srt")
+                    srt_path.write_text(cues_to_srt(cues), encoding="utf-8")
+                updated = lib.update_clip(
+                    source_id,
+                    c["id"],
+                    {
+                        "status": "rendered",
+                        "export_path": str(path),
+                        **({"captions_srt": str(srt_path)} if srt_path else {}),
+                    },
+                )
+                row = updated or {**c, "export_path": str(path), "status": "rendered"}
+                if srt_path:
+                    row["captions_srt"] = str(srt_path)
+                exported.append(row)
+            except Exception as e:
+                errors.append(f"{title}: {e}")
+
+        _set_export_job(
+            job_id,
+            status="done" if exported else "error",
+            percent=100 if exported else 0,
+            message=(
+                f"Exported {len(exported)} clip(s)"
+                + (f" · {len(errors)} failed" if errors else "")
+            ),
+            detail=str(out_dir),
+            exported=exported,
+            errors=errors,
+            out_dir=str(out_dir),
+        )
+    except Exception as e:
+        _set_export_job(
+            job_id,
+            status="error",
+            percent=0,
+            message=str(e),
+            exported=exported,
+            errors=errors + [str(e)],
+            out_dir=str(out_dir),
+        )
 
 
 @app.post("/api/sources/{source_id}/export")
 def export_clips(source_id: str, body: ExportBody = ExportBody()) -> dict[str, Any]:
+    """Start an async export job; poll GET /api/export/{job_id} for progress."""
     s = lib.get_source(source_id)
     if not s:
         raise HTTPException(404, "source not found")
@@ -752,22 +1018,37 @@ def export_clips(source_id: str, body: ExportBody = ExportBody()) -> dict[str, A
     if not clips:
         raise HTTPException(400, "no clips to export")
 
-    out_dir = video.parent / "clips"
-    exported: list[dict[str, Any]] = []
-    errors: list[str] = []
-    for c in clips:
-        try:
-            path = _export_clip(video, c, out_dir)
-            updated = lib.update_clip(
-                source_id,
-                c["id"],
-                {"status": "rendered", "export_path": str(path)},
-            )
-            exported.append(updated or {**c, "export_path": str(path), "status": "rendered"})
-        except Exception as e:
-            errors.append(f"{c.get('title') or c['id']}: {e}")
+    job_id = new_id("exp_")
+    _set_export_job(
+        job_id,
+        id=job_id,
+        source_id=source_id,
+        status="queued",
+        percent=0,
+        message=f"Queued {len(clips)} clip(s)…",
+        detail="Preparing ffmpeg",
+        current_clip=0,
+        total_clips=len(clips),
+        clip_percent=0,
+        exported=[],
+        errors=[],
+        out_dir=str(video.parent / "clips"),
+    )
+    threading.Thread(
+        target=_run_export_job,
+        args=(job_id, source_id, video, list(clips)),
+        daemon=True,
+    ).start()
+    return {"job_id": job_id, "status": "queued", "total_clips": len(clips)}
 
-    return {"exported": exported, "errors": errors, "out_dir": str(out_dir)}
+
+@app.get("/api/export/{job_id}")
+def get_export_job(job_id: str) -> dict[str, Any]:
+    with export_jobs_lock:
+        job = export_jobs.get(job_id)
+    if not job:
+        raise HTTPException(404, "export job not found")
+    return job
 
 
 @app.get("/api/media")

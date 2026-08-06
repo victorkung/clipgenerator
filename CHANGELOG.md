@@ -7,16 +7,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **Clip captions:** generate from source transcript (clip-relative times), edit text in Captions tab, live overlay on source player; export writes `.srt` sidecar
+
 ### Changed
 
 - Source folder date is **ingest/posting day** (today), not the content’s original upload date
 - Typed Start/End times seek the player and scroll the transcript (Apply / Enter / blur)
 - Whisper model dropdown: least → most powerful, with length guidance
 - `AGENTS.md` / README: short session bootstrap so new Grok sessions skip re-discovery
+- Export progress (message + %) shows under the clip-bar export buttons, not the top page banner
+- Export ffmpeg: drain stderr (fixes deadlock hang at 0%) and seek with pre-input `-ss` so long sources start encoding quickly
+- Export success/progress clears when switching sources (no leftover banner on the next video)
 
 ### Planned
 
-- Caption edit + burn-in
+- Caption burn-in on export
 - AI-suggested clip board
 - Optional post scheduling
 
