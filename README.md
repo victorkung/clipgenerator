@@ -1,33 +1,40 @@
 # clipgenerator
 
-Local tool: **download** a long YouTube/X video, **transcribe on-device** (MLX Whisper), then **cut many clips** with a live, highlighting transcript — and export X-ready H.264 MP4s.
+**Local multi-clip studio** for long YouTube and X videos: download → on-device transcription → mark in/out with a live transcript → export clean H.264+AAC clips (optional SRT captions).
 
-Personal daily driver. No cloud STT bill. No multi-tenant hosting.
+No cloud speech bill. No accounts. No multi-tenant hosting. Runs on your machine (Apple Silicon recommended for MLX Whisper).
 
 ```text
-URL → download → Whisper transcript → multi-clip editor → export clips/
+URL → yt-dlp download → MLX Whisper STT → multi-clip editor → export clips/
 ```
 
-Release history: **[CHANGELOG.md](CHANGELOG.md)** (Keep a Changelog style). UI design system: **[app/frontend/DESIGN.md](app/frontend/DESIGN.md)**.
+| | |
+|--|--|
+| **UI** | http://127.0.0.1:5173 (Vite) |
+| **API** | http://127.0.0.1:8787 (FastAPI) |
+| **Changelog** | [CHANGELOG.md](CHANGELOG.md) |
+| **Design system** | [app/frontend/DESIGN.md](app/frontend/DESIGN.md) |
+| **Agent pipeline (optional)** | [prompts/AGENT_PIPELINE.md](prompts/AGENT_PIPELINE.md) |
 
-## New Grok / AI session (shortest path)
+## For AI coding agents
 
-Grok **auto-loads [AGENTS.md](AGENTS.md)** at session start (project rules). That file is the source of truth for agents — git rules + a compact product map. You do **not** need to paste chat history.
+Auto-load **[AGENTS.md](AGENTS.md)** first (product map + git rules). Prefer that over re-exploring the tree. Recent changes: `CHANGELOG.md` → `[Unreleased]`.
 
-**Human / agent checklist for a fresh session:**
+## Features
 
-1. Work in this repo root: `clipgenerator` (`victorkung/clipgenerator`).
-2. Trust **AGENTS.md** first; only open other files when the task needs them (table inside AGENTS.md).
-3. For “what shipped / what’s next”: `CHANGELOG.md` → `[Unreleased]`.
-4. To run the app: section **Quick start — web UI** below (API `:8787`, UI `:5173`).
-5. Prefer a **new session** when context is large or the task is unrelated — don’t burn tokens re-exploring.
-
-Optional (experimental): enable Grok cross-session memory if you want recall across days — see Grok docs on memory (`grok --experimental-memory` / config). Project facts still belong in **AGENTS.md**, not chat.
+- **Ingest** YouTube or X URLs (yt-dlp + H.264 normalize)
+- **Local Whisper** (MLX) with progress — default model `small`
+- **Multi-clip editor** on one source: playhead marks, typed times, transcript click / modifiers
+- **Captions** from the source transcript (clip-relative times) + SRT on export
+- **Export** H.264 + AAC into `videos/…/clips/`
+- **Optional Agent flow** — export markdown packs for an external LLM, import a lean clip-plan JSON (bring your own prompts; see [prompts/](prompts/))
 
 ## Prerequisites
 
 ```bash
 brew install yt-dlp ffmpeg
+git clone https://github.com/victorkung/clipgenerator-public.git
+cd clipgenerator-public   # or your local folder name
 python3 -m venv .venv
 source .venv/bin/activate
 pip install -r requirements.txt
@@ -43,6 +50,8 @@ cd app/frontend && npm install && cd ../..
 ```bash
 ./scripts/serve.sh
 # → http://127.0.0.1:8787
+# Sets CLIPGENERATOR_AGENT_FLOW=1 by default (Agent flow tab).
+# Editor-only: CLIPGENERATOR_AGENT_FLOW=0 ./scripts/serve.sh
 # Do not use RELOAD=1 while long downloads/STT are running (restarts kill jobs).
 ```
 
@@ -59,20 +68,28 @@ Then:
 2. Wait for status **ready** (stage pipeline + progress bar).
 3. Play video; transcript highlights by time; click a line to seek.
 4. **Set start** / **Set end** from the playhead, or type `m:ss` / `h:mm:ss` (Enter or **Apply** seeks the player + transcript).
-5. **Generate captions** (optional) → edit in the **Captions** tab; overlay previews on the player while scrubbing the **source** video.
-6. **Export clip** → `videos/…/clips/*.mp4` (H.264 + AAC). If captions exist, also writes a matching `.srt` (times from clip start). Burn-in onto the video is not implemented yet.
+5. **Editor:** mark clips, optional captions, **Export clip**.
+6. **Agent flow** (optional tab): brief → summary package → paste summary URL → clip package → import JSON — [prompts/AGENT_PIPELINE.md](prompts/AGENT_PIPELINE.md).
+7. **Export clip** → `videos/…/clips/*.mp4` (+ `.srt` if captions exist). Burn-in onto video is not implemented yet.
+
+### Private editorial packs (optional)
+
+Brand-specific LLM instructions are **not** in this public repo. Keep them in a private folder or a separate private git remote under `prompts/private/` (gitignored except the public [prompts/private/README.md](prompts/private/README.md)). The app never requires a private pack — paste prompts into your LLM product of choice.
 
 ### Editing clips
 
 | Action | How |
 |--------|-----|
-| Set start | Playhead → **Set start**, or ⌥/Alt+click a transcript line |
-| Set end | Playhead → **Set end**, or Shift+click a transcript line |
+| Set start | Playhead → **Set start**, key **I**, or ⌥/Alt+click a transcript line |
+| Set end | Playhead → **Set end**, key **O**, or Shift+click a transcript line |
 | Type times | Start/End fields → Enter or **Apply** (jumps player + transcript to that time) |
+| Agent flow | Optional tab (`CLIPGENERATOR_AGENT_FLOW=1`) → packages + import |
 | Captions | **Generate captions** on the active clip → **Captions** tab to edit text; click a cue time to seek |
-| New range on same video | **+ New clip** |
+| Post package | Collapsible under Export; copy post / summary URL for manual X posting |
+| New range on same video | **+ New clip** (Clips header) |
 | Rename source | Click the title or **Rename** |
 | Remove from sidebar | **×** or **Remove** (files on disk are kept) |
+| Retry STT | On error (video present) → **Retry transcribe** |
 
 **Caption workflow note:** There is no separate clip-only player yet. You always scrub the long source; captions are stored **relative to the clip’s start** so they match the exported file. If you change in/out after generating, regenerate captions.
 
@@ -89,6 +106,9 @@ videos/
     source.audio.m4a
     source.transcript.json
     source.transcript.txt
+    agent-export/                ← Agent Export (for Grok web)
+      summary/                   ← Summary agent package
+      clip/                      ← Clipping agent package
     clips/
       chamath-leverage-cf4c1e.mp4
 ```
@@ -138,17 +158,14 @@ MODEL_DIR=/Volumes/YourDrive/Open Source Models
 
 ```text
 clipgenerator/
-├── scripts/
-│   ├── download.sh      # yt-dlp + H.264 ensure
-│   ├── to-h264.sh
-│   ├── transcribe.sh    # MLX Whisper / sidecar captions
-│   ├── transcribe.py
-│   └── serve.sh         # local FastAPI (no auto-reload by default)
+├── scripts/             # download, transcribe, serve
 ├── app/
-│   ├── backend/         # ingest, clips, export API
-│   └── frontend/        # Vite + React UI + DESIGN.md
+│   ├── backend/         # FastAPI: ingest, clips, export, agent packages
+│   └── frontend/        # Vite + React UI + design tokens
+├── prompts/             # public agent-pipeline docs + clip-plan schema
+│   └── private/         # your packs only (gitignored) — see private/README.md
 ├── config/yt-dlp.conf
-├── CHANGELOG.md         # release notes
+├── docs/                # design notes
 ├── data/                # library.json (gitignored)
 └── videos/              # media (gitignored)
 ```
@@ -178,10 +195,10 @@ Bump the version header in `CHANGELOG.md` for each public drop.
 
 ## Roadmap
 
-| Release | Scope |
-|---------|--------|
-| **0.2 (this)** | Local Whisper, multi-clip UI, export with audio, design system |
-| Later | Caption burn-in, AI clip suggestions, post scheduling |
+| Status | Scope |
+|--------|--------|
+| **Shipped** | Local Whisper, multi-clip UI, captions + SRT, agent package export/import, design system |
+| **Later** | Caption burn-in on export, richer publish board, optional schedulers |
 
 ## Troubleshooting
 

@@ -1,6 +1,10 @@
 # Secrets — never commit API keys
 .env
 
+# Private workflow packs (Option B) — keep local / private remote only
+prompts/private/**
+!prompts/private/README.md
+
 # Downloaded media + derived artifacts (local only)
 videos/
 data/

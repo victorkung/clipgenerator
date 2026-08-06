@@ -29,6 +29,13 @@ export const api = {
   updateSource: (id, body) =>
     req(`/api/sources/${id}`, { method: "PATCH", body: JSON.stringify(body) }),
   ingest: (body) => req("/api/ingest", { method: "POST", body: JSON.stringify(body) }),
+  retryTranscribe: (sourceId, model) =>
+    req(
+      `/api/sources/${sourceId}/retry-transcribe${
+        model ? `?model=${encodeURIComponent(model)}` : ""
+      }`,
+      { method: "POST" }
+    ),
   createClip: (sourceId, body) =>
     req(`/api/sources/${sourceId}/clips`, { method: "POST", body: JSON.stringify(body) }),
   updateClip: (sourceId, clipId, body) =>
@@ -53,6 +60,20 @@ export const api = {
       body: JSON.stringify({ clip_ids: clipIds }),
     }),
   getExportJob: (jobId) => req(`/api/export/${jobId}`),
+  exportSummaryPackage: (sourceId) =>
+    req(`/api/sources/${sourceId}/agent-export/summary`, { method: "POST" }),
+  exportClipPackage: (sourceId) =>
+    req(`/api/sources/${sourceId}/agent-export/clip`, { method: "POST" }),
+  importClipPlan: (sourceId, body) =>
+    req(`/api/sources/${sourceId}/clip-plan/import`, {
+      method: "POST",
+      body: JSON.stringify(body),
+    }),
+  revealPath: (path) =>
+    req("/api/reveal-path", {
+      method: "POST",
+      body: JSON.stringify({ path }),
+    }),
   mediaUrl: (absPath) => `/api/media?path=${encodeURIComponent(absPath)}`,
 };
 

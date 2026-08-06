@@ -10,6 +10,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Added
 
 - **Clip captions:** generate from source transcript (clip-relative times), edit text in Captions tab, live overlay on source player; export writes `.srt` sidecar
+- **Main tabs:** Editor · Agent flow (`CLIPGENERATOR_AGENT_FLOW`, default off; `serve.sh` sets on)
+- **Agent packages:** split `agent-export/summary/` and `agent-export/clip/`; lean X-only clip-plan import; editable post text
+- **Option B packaging:** public `prompts/` (pipeline docs + schema); private packs under gitignored `prompts/private/**`
+- **Editor craft zones:** Mark / Export / Post sections with clearer primary actions
+- **Keyboard marks:** `I` set start · `O` set end (ignored while typing in fields)
+- **Retry transcribe** when a source errors after video is on disk
+- **Reveal in Finder** on successful media export paths
+- **Short-source warning** when duration is under ~90s (promo-clip gotcha)
+- **Import notice** after clip-plan import (persists until dismiss / switch source)
+- Brand cut-mark glyph + **local clip studio** tagline
+- Design redesign plan: `docs/DESIGN_REDESIGN.md`
 
 ### Changed
 
@@ -20,6 +31,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Export progress (message + %) shows under the clip-bar export buttons, not the top page banner
 - Export ffmpeg: drain stderr (fixes deadlock hang at 0%) and seek with pre-input `-ss` so long sources start encoding quickly
 - Export success/progress clears when switching sources (no leftover banner on the next video)
+- **UI redesign (premium):** cool zinc + amber craft system, Inter + JetBrains Mono times, command-bar ingest, NLE mark rail + timeline strip, elevated cards, motion tokens, polished empty state
+- **High-contrast pass:** solid control fills, stronger borders, visible inputs, solid green Set in, brighter timeline track/range, filled ghost buttons (no bare text on dark panels)
+- Post package **collapses when empty**; expands when plan-imported or has post text
+- Agent flow: source context strip, per-step status, clearer stepper chips
+- Sidebar shows duration; ready sources sort first
+- Copy post / URLs flash “Copied”; captions feedback separated from media export status
+- Design system docs synced to live tokens (`app/frontend/DESIGN.md`)
 
 ### Planned
 

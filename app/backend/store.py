@@ -142,6 +142,9 @@ def make_source(
         "status": status,  # pending | downloading | transcribing | ready | error
         "error": None,
         "model": None,
+        # Agent flow (optional / feature-flagged UI)
+        "podbrief_text": None,  # → summary/04-podbrief.md
+        "summary_post_url": None,  # X URL of published summary (clip quote target)
         "clips": [],
         "created_at": now,
         "updated_at": now,
@@ -166,6 +169,17 @@ def make_clip(
         # Clip-relative captions (0 = clip start). Generated from source transcript.
         "captions": [],
         "captions_meta": None,  # {t_in, t_out, generated_at, count}
+        # Packaging fields (from Grok clip-plan import)
+        "post_text": "",
+        "hook": "",
+        "why": "",
+        "meaning": "",
+        "score": None,
+        "core_quotes": [],
+        "tags": [],
+        "vk_angle": None,
+        "platform_captions": {"tiktok": "", "shorts": "", "reels": ""},
+        "from_plan": False,
         "created_at": now,
         "updated_at": now,
     }

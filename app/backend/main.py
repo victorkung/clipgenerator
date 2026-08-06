@@ -27,12 +27,30 @@ DOWNLOAD_SH = SCRIPTS / "download.sh"
 TRANSCRIBE_PY = SCRIPTS / "transcribe.py"
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
+from agent_io import (  # noqa: E402
+    extract_json_object,
+    normalize_clip_plan,
+    plan_item_to_clip_fields,
+    save_clip_plan_copy,
+    write_clip_export,
+    write_summary_export,
+)
 from captions import cues_to_srt, normalize_cues, slice_transcript_to_clip  # noqa: E402
 from naming import clean_title, make_project_dir  # noqa: E402
 from store import Library, make_clip, make_source, _now, new_id  # noqa: E402
 
 VIDEOS.mkdir(exist_ok=True)
 DATA.mkdir(exist_ok=True)
+
+# Agent flow tab (Summary → Clips → Import). Default OFF for open-source / plain API.
+# ./scripts/serve.sh sets CLIPGENERATOR_AGENT_FLOW=1 for local daily-driver use.
+# Private editorial packs live in prompts/private/ (gitignored) — not required at runtime.
+AGENT_FLOW_ENABLED = os.environ.get("CLIPGENERATOR_AGENT_FLOW", "0").strip().lower() in (
+    "1",
+    "true",
+    "yes",
+    "on",
+)
 
 lib = Library(LIBRARY_PATH)
 jobs_lock = threading.Lock()
@@ -301,6 +319,8 @@ class ClipUpdate(BaseModel):
     notes: str | None = None
     status: str | None = None
     captions: list[dict[str, Any]] | None = None
+    post_text: str | None = None
+    tags: list[str] | None = None
 
 
 class CaptionsPut(BaseModel):
@@ -320,6 +340,7 @@ def health() -> dict[str, Any]:
         "root": str(ROOT),
         "videos": str(VIDEOS),
         "python": _venv_python(),
+        "agent_flow": AGENT_FLOW_ENABLED,
     }
 
 
@@ -358,6 +379,15 @@ def get_job(source_id: str) -> dict[str, Any]:
 
 class SourceUpdate(BaseModel):
     title: str | None = None
+    podbrief_text: str | None = None
+    summary_post_url: str | None = None
+
+
+class ClipPlanImportBody(BaseModel):
+    """Grok clip-plan JSON, or raw chat paste containing a fenced JSON block."""
+
+    plan: dict[str, Any] | list[Any] | None = None
+    text: str | None = None  # paste fallback
 
 
 @app.patch("/api/sources/{source_id}")
@@ -365,6 +395,10 @@ def patch_source(source_id: str, body: SourceUpdate) -> dict[str, Any]:
     if not lib.get_source(source_id):
         raise HTTPException(404, "source not found")
     patch: dict[str, Any] = {}
+    if body.podbrief_text is not None:
+        patch["podbrief_text"] = body.podbrief_text
+    if body.summary_post_url is not None:
+        patch["summary_post_url"] = body.summary_post_url.strip() or None
     if body.title is not None:
         t = clean_title(body.title.strip()) if body.title.strip() else ""
         if not t:
@@ -638,10 +672,13 @@ def patch_clip(source_id: str, clip_id: str, body: ClipUpdate) -> dict[str, Any]
     raw = body.model_dump(exclude_unset=True)
     patch: dict[str, Any] = {}
     for k, v in raw.items():
-        if v is None and k != "captions":
+        # Allow clearing post_text with ""; still skip other explicit nulls
+        if v is None and k not in ("captions", "post_text"):
             continue
         if k == "captions":
             patch["captions"] = normalize_cues(v)
+        elif k == "post_text":
+            patch["post_text"] = "" if v is None else str(v)
         else:
             patch[k] = v
     if not patch:
@@ -657,6 +694,207 @@ def remove_clip(source_id: str, clip_id: str) -> dict[str, str]:
     if not lib.delete_clip(source_id, clip_id):
         raise HTTPException(404, "clip not found")
     return {"status": "deleted"}
+
+
+def _project_dir_for_source(s: dict[str, Any]) -> Path:
+    folder = s.get("folder")
+    video = Path(s["video_path"]) if s.get("video_path") else None
+    project_dir = Path(folder) if folder else (video.parent if video else None)
+    if not project_dir or not project_dir.is_dir():
+        raise HTTPException(400, "source folder missing on disk")
+    return project_dir
+
+
+def _ready_source_with_transcript(source_id: str) -> tuple[dict[str, Any], dict[str, Any], Path]:
+    s = lib.get_source(source_id)
+    if not s:
+        raise HTTPException(404, "source not found")
+    if s.get("status") != "ready":
+        raise HTTPException(400, "source not ready — wait for transcript")
+    project_dir = _project_dir_for_source(s)
+    tpath = s.get("transcript_json")
+    data = _load_transcript(Path(tpath) if tpath else None)
+    if not data:
+        raise HTTPException(400, "transcript not ready")
+    return s, data, project_dir
+
+
+@app.post("/api/sources/{source_id}/agent-export/summary")
+def export_summary_package(source_id: str) -> dict[str, Any]:
+    """Write agent-export/summary/ for the Grok Summary project."""
+    s, data, project_dir = _ready_source_with_transcript(source_id)
+    written = write_summary_export(
+        s,
+        segments=data.get("segments") or [],
+        project_dir=project_dir,
+    )
+    return {
+        "status": "ok",
+        "kind": "summary",
+        "dir": written["dir"],
+        "root": written["root"],
+        "files": written["files"],
+        "message": "Summary package ready — drag into the Summary Grok project",
+    }
+
+
+@app.post("/api/sources/{source_id}/agent-export/clip")
+def export_clip_package(source_id: str) -> dict[str, Any]:
+    """Write agent-export/clip/ for the Grok Clipping project (needs summary_post_url)."""
+    s, data, project_dir = _ready_source_with_transcript(source_id)
+    try:
+        written = write_clip_export(
+            s,
+            segments=data.get("segments") or [],
+            project_dir=project_dir,
+        )
+    except ValueError as e:
+        raise HTTPException(400, str(e)) from e
+    return {
+        "status": "ok",
+        "kind": "clip",
+        "dir": written["dir"],
+        "root": written["root"],
+        "files": written["files"],
+        "message": "Clip package ready — drag into the Clipping Grok project",
+    }
+
+
+@app.post("/api/sources/{source_id}/agent-brief")
+@app.post("/api/sources/{source_id}/agent-export")
+def export_agent_packages_legacy(source_id: str) -> dict[str, Any]:
+    """Legacy: export summary (always) + clip if summary_post_url is set."""
+    s, data, project_dir = _ready_source_with_transcript(source_id)
+    summary = write_summary_export(
+        s,
+        segments=data.get("segments") or [],
+        project_dir=project_dir,
+    )
+    clip = None
+    clip_error = None
+    try:
+        clip = write_clip_export(
+            s,
+            segments=data.get("segments") or [],
+            project_dir=project_dir,
+        )
+    except ValueError as e:
+        clip_error = str(e)
+    return {
+        "status": "ok",
+        "dir": str(project_dir / "agent-export"),
+        "summary_dir": summary["dir"],
+        "clip_dir": clip["dir"] if clip else None,
+        "files": {
+            "summary": summary["files"],
+            "clip": clip["files"] if clip else {},
+        },
+        "clip_error": clip_error,
+        "message": "Agent export written (summary always; clip only if summary_post_url set)",
+    }
+
+
+@app.post("/api/sources/{source_id}/clip-plan/import")
+def import_clip_plan(source_id: str, body: ClipPlanImportBody) -> dict[str, Any]:
+    """
+    Create clips from a Grok clip-plan JSON (or chat paste containing a JSON block).
+    Does not re-encode video — use Export after reviewing on the timeline.
+    """
+    s = lib.get_source(source_id)
+    if not s:
+        raise HTTPException(404, "source not found")
+
+    raw_text = body.text
+    try:
+        if body.plan is not None:
+            raw_plan: Any = body.plan
+        elif body.text:
+            raw_plan = extract_json_object(body.text)
+        else:
+            raise HTTPException(400, "provide plan JSON or text paste")
+        plan = normalize_clip_plan(raw_plan)
+    except ValueError as e:
+        raise HTTPException(400, str(e)) from e
+
+    # Persist for audit / re-import (best-effort)
+    plan_path = None
+    try:
+        project_dir = _project_dir_for_source(s)
+        plan_path = save_clip_plan_copy(project_dir, plan, raw_text=raw_text)
+    except Exception:
+        plan_path = None
+
+    created: list[dict[str, Any]] = []
+    errors: list[str] = []
+    for i, item in enumerate(plan["clips"]):
+        label = (
+            (item.get("title") if isinstance(item, dict) else None) or f"clip {i + 1}"
+        )
+        try:
+            fields = plan_item_to_clip_fields(item)
+            clip = make_clip(
+                title=fields.pop("title"),
+                t_in=fields.pop("t_in"),
+                t_out=fields.pop("t_out"),
+            )
+            clip.update(fields)
+            out = lib.add_clip(source_id, clip)
+            if out:
+                created.append(out)
+            else:
+                errors.append(f"{label}: source missing")
+        except (ValueError, TypeError, KeyError) as e:
+            errors.append(f"{label}: {e}")
+
+    if not created and errors:
+        raise HTTPException(400, "; ".join(errors))
+
+    refreshed = lib.get_source(source_id)
+    return {
+        "status": "ok",
+        "created": len(created),
+        "clips": created,
+        "errors": errors,
+        "source": refreshed,
+        "plan_notes": plan.get("notes"),
+        "plan_path": plan_path,
+        "summary": [
+            {
+                "id": c.get("id"),
+                "title": c.get("title"),
+                "t_in": c.get("t_in"),
+                "t_out": c.get("t_out"),
+                "has_post": bool((c.get("post_text") or "").strip()),
+            }
+            for c in created
+        ],
+    }
+
+
+@app.post("/api/reveal-path")
+def reveal_path(body: dict[str, Any]) -> dict[str, str]:
+    """Open a path in Finder (macOS) / file manager — only under videos/."""
+    raw = body.get("path") if isinstance(body, dict) else None
+    if not raw or not isinstance(raw, str):
+        raise HTTPException(400, "path required")
+    path = Path(raw).expanduser().resolve()
+    try:
+        path.relative_to(VIDEOS.resolve())
+    except ValueError as e:
+        raise HTTPException(400, "path must be under videos/") from e
+    if not path.exists():
+        raise HTTPException(404, "path not found")
+    target = path if path.is_dir() else path.parent
+    try:
+        if sys.platform == "darwin":
+            subprocess.run(["open", str(target)], check=False)
+        elif sys.platform.startswith("linux"):
+            subprocess.run(["xdg-open", str(target)], check=False)
+        else:
+            subprocess.run(["explorer", str(target)], check=False)
+    except FileNotFoundError as e:
+        raise HTTPException(500, f"could not open file manager: {e}") from e
+    return {"status": "ok", "opened": str(target)}
 
 
 def _get_clip(source: dict[str, Any], clip_id: str) -> dict[str, Any] | None:

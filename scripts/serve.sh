@@ -14,9 +14,12 @@ fi
 
 export PYTHONPATH="${ROOT}/app/backend${PYTHONPATH:+:$PYTHONPATH}"
 PORT="${PORT:-8787}"
+# Daily-driver default: show Agent flow tab. Open-source / clean UI: CLIPGENERATOR_AGENT_FLOW=0
+export CLIPGENERATOR_AGENT_FLOW="${CLIPGENERATOR_AGENT_FLOW:-1}"
 # Default: NO --reload. Auto-reload kills long download/Whisper jobs mid-run.
 # Opt in for backend hacking: RELOAD=1 ./scripts/serve.sh
 echo "clipgenerator API → http://127.0.0.1:${PORT}"
+echo "  agent_flow=${CLIPGENERATOR_AGENT_FLOW}  (set CLIPGENERATOR_AGENT_FLOW=0 for Editor-only)"
 echo "  UI dev (separate terminal): cd app/frontend && npm install && npm run dev"
 echo
 
