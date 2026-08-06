@@ -255,7 +255,7 @@ This project is meant to be **one public daily-driver repository**. Anyone can c
 
 Details and checklist: **[docs/PUBLIC_REPO.md](docs/PUBLIC_REPO.md)**.
 
-Private editorial packs (Option B): keep them local under `prompts/private/` or in a separate private repo/submodule — the app does not load them at runtime.
+Private editorial packs: keep them local under gitignored `prompts/private/` (or only inside your LLM product). The app does not load them at runtime.
 
 ---
 

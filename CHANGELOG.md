@@ -12,8 +12,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Clip captions:** generate from source transcript (clip-relative times), edit text in Captions tab; export writes `.srt` sidecar
 - **Pane tabs:** Transcript · Captions · Post · Agent handoff (`CLIPGENERATOR_AGENT_FLOW`, default off; `serve.sh` sets on)
 - **Agent packages:** split `agent-export/summary/` and `agent-export/clip/`; lean X-only clip-plan import; editable post text + shared prompts
-- **Option B packaging:** public `prompts/` (pipeline docs + schema); private packs under gitignored `prompts/private/**`
-- **Public packaging:** brand assets (`brand/`), favicons, README screenshots (`docs/images/`), MIT `LICENSE`, [docs/PUBLIC_REPO.md](docs/PUBLIC_REPO.md)
+- **Public packaging:** public `prompts/` (pipeline docs + schema); private packs under gitignored `prompts/private/**`; brand assets; README screenshots; MIT `LICENSE`; [docs/PUBLIC_REPO.md](docs/PUBLIC_REPO.md)
 - **Editor craft zones:** Clip / Caption / Export with clearer primary actions
 - **Keyboard marks:** `I` set start · `O` set end (ignored while typing in fields)
 - **Retry transcribe** when a source errors after video is on disk
@@ -21,10 +20,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Short-source warning** when duration is under ~90s (promo-clip gotcha)
 - **Import notice** after clip-plan import (persists until dismiss / switch source)
 - Brand cut-mark glyph + **a local clip desk** tagline
-- Design redesign plan: `docs/DESIGN_REDESIGN.md`
 
 ### Changed
 
+- Docs cleanup: single-repo private packs (no companion private repo required); removed superseded design plan docs
 - **Desk feedback pass:** Post is a center tab; craft = Clip → Caption → Export; no on-player caption overlay; Start/End labels; wider transcript + craft column; app max-width; center content centered; landing uses same 3-col shell
 - **Whisper allowlist:** UI and API accept **small** and **medium** only (unknown sizes fall back to small); CLI still supports more models
 - Export success paths show `/clips/…` only; sidebar foot is **Open in Finder**

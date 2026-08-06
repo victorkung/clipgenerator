@@ -34,14 +34,16 @@ Remote today: `https://github.com/victorkung/clipgenerator-public`
 
 `.gitignore` already covers the standard cases. Before every commit, agents follow the checklist in [AGENTS.md](../AGENTS.md).
 
-## Single-repo vs split private packs
+## Private packs (local only — no second repo required)
 
-| Approach | When |
-|----------|------|
-| **Single public repo (recommended)** | Default. Personal packs live only under gitignored `prompts/private/` on your machine. |
-| **Optional private sibling repo** | If you want packs backed up/synced across machines without a public leak — e.g. symlink `prompts/private/my-pack` → private repo. Not required to run the app. |
+Keep brand/editorial LLM instructions under **gitignored** `prompts/private/<your-pack>/` on this machine (or only inside your Grok/ChatGPT project).
 
-The app **does not load** private packs at runtime. You paste instructions into an external LLM.
+A separate `clipgenerator-private` repository is **not required**. Prefer:
+
+1. Local files under `prompts/private/` (gitignored), and/or  
+2. The instructions text living in the external LLM product.
+
+The app **does not load** private packs at runtime — you paste them into an external LLM.
 
 ## Contributor / maintainer checklist
 
@@ -65,4 +67,4 @@ Documented in the root [README.md](../README.md):
 
 ## License
 
-If the repo has no `LICENSE` file yet, add one before marketing the project widely (MIT is a common default for tools like this). Without a license, others’ rights to use/modify are ambiguous under copyright law.
+This project is released under the **MIT License** (see root `LICENSE`).

@@ -7,15 +7,15 @@ This folder holds **public, generic** assets for the optional **Agent flow** tab
 | [AGENT_PIPELINE.md](./AGENT_PIPELINE.md) | How the optional Summary → Clips → Import pipeline works |
 | [CLIP_PLAN_SCHEMA.example.json](./CLIP_PLAN_SCHEMA.example.json) | Lean X-oriented JSON shape for clip import |
 
-## Private packs (Option B)
+## Private packs (optional, local only)
 
-Brand-specific Grok project instructions, playbooks, and memory live under:
+Brand-specific LLM instructions live under gitignored:
 
 ```text
 prompts/private/<your-pack>/
 ```
 
-That tree is **gitignored** (except [private/README.md](./private/README.md)). Clone the public repo and drop your own pack in place—or keep a separate private repo/submodule.
+(except [private/README.md](./private/README.md), which is public). No second GitHub repo is required.
 
 clipgenerator does **not** load these files at runtime. You paste them into an external LLM (e.g. Grok web projects). The app only exports markdown packages + imports clip-plan JSON.
 

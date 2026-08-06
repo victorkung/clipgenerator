@@ -117,7 +117,7 @@ This file is **auto-loaded** every Grok session in this repo. Do **not** re-read
 
 ### Product (clipgenerator)
 
-- **Repo:** single public app `victorkung/clipgenerator-public` (see `docs/PUBLIC_REPO.md`). Private packs optional under gitignored `prompts/private/` (or a private sibling repo/symlink).
+- **Repo:** single public app `victorkung/clipgenerator-public` (see `docs/PUBLIC_REPO.md`). Private packs optional under gitignored `prompts/private/` only — no second private app repo required.
 - **Flow:** URL → yt-dlp download → MLX Whisper STT → multi-clip editor → H.264+AAC export under `videos/…/clips/`.
 - **Run UI:** `./scripts/serve.sh` → `:8787` · `cd app/frontend && npm run dev` → `:5173` (proxies `/api`). No `RELOAD=1` during long jobs.
 - **Layout:** `videos/YYYY-MM-DD ShowName/` — date is **ingest/posting day (today)**, not original publish date. Library: gitignored `data/library.json`.
@@ -127,7 +127,7 @@ This file is **auto-loaded** every Grok session in this repo. Do **not** re-read
 - **Editor:** type Start/End + Enter/Apply → seek player + scroll transcript. Keys `I`/`O` set start/end at playhead. Click transcript line seeks.
 - **Clip captions:** still scrub **source** video; **Generate captions** slices source transcript into **clip-relative** cues (0 = clip start). Center **Captions** tab edits text; export writes `.srt` sidecar (no on-player overlay; burn-in not built).
 - **Pane tabs:** Transcript · Captions · Post · **Agent handoff** (optional). Flag `CLIPGENERATOR_AGENT_FLOW` default **0**; `./scripts/serve.sh` sets **1** for daily driver.
-- **Option B packaging:** public `prompts/` = generic pipeline docs + clip-plan schema. Private editorial packs in **gitignored** `prompts/private/**`. App does not load packs at runtime — paste into external LLM.
+- **Packaging:** public `prompts/` = generic pipeline docs + clip-plan schema. Private editorial packs in **gitignored** `prompts/private/**`. App does not load packs at runtime — paste into external LLM.
 - **Agent flow steps:** brief → Summary export → paste summary URL → Clip export → Import plan → Editor.
 - **X gotcha:** some posts are **promo clips** (~30s); full episode may live on YouTube/Spotify/RSS — duration in UI is truth for what downloaded.
 - **Never commit:** `.env`, `videos/`, `data/`, `.venv/`, `prompts/private/**` (except `README.md`), transcripts/audio sidecars.
