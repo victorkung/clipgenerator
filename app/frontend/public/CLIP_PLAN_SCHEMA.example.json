@@ -1,0 +1,15 @@
+{
+  "version": 1,
+  "clips": [
+    {
+      "title": "Example clip title",
+      "t_in": 2628.0,
+      "t_out": 2785.0,
+      "t_in_label": "43:48",
+      "t_out_label": "46:25",
+      "post_text": "lowercase x post body with context — value first",
+      "tags": ["@host", "@guest"],
+      "why": "optional one-liner for the editor"
+    }
+  ]
+}

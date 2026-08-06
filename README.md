@@ -1,8 +1,12 @@
+<p align="center">
+  <img src="brand/logo-lockup-with-tagline.png" alt="clipgenerator — a local clip desk" width="420" />
+</p>
+
 # clipgenerator
 
-**Local multi-clip studio** for long YouTube and X videos: download → on-device transcription → mark in/out with a live transcript → export clean H.264+AAC clips (optional SRT captions).
+**Local multi-clip studio** for long YouTube and X videos: download → on-device transcription → mark in/out against a live transcript → export clean H.264+AAC clips (optional SRT captions).
 
-No cloud speech bill. No accounts. No multi-tenant hosting. Runs on your machine (Apple Silicon recommended for MLX Whisper).
+No cloud speech bill. No accounts. No multi-tenant hosting. Runs on **your machine** (Apple Silicon recommended for MLX Whisper).
 
 ```text
 URL → yt-dlp download → MLX Whisper STT → multi-clip editor → export clips/
@@ -15,144 +19,209 @@ URL → yt-dlp download → MLX Whisper STT → multi-clip editor → export cli
 | **Changelog** | [CHANGELOG.md](CHANGELOG.md) |
 | **Design system** | [app/frontend/DESIGN.md](app/frontend/DESIGN.md) |
 | **Agent pipeline (optional)** | [prompts/AGENT_PIPELINE.md](prompts/AGENT_PIPELINE.md) |
+| **Repo policy** | [docs/PUBLIC_REPO.md](docs/PUBLIC_REPO.md) |
 
-## For AI coding agents
+---
 
-Auto-load **[AGENTS.md](AGENTS.md)** first (product map + git rules). Prefer that over re-exploring the tree. Recent changes: `CHANGELOG.md` → `[Unreleased]`.
+## Screenshots
 
-## Features
+### Welcome desk
 
-- **Ingest** YouTube or X URLs (yt-dlp + H.264 normalize)
-- **Local Whisper** (MLX) with progress — default model `small`
-- **Multi-clip editor** on one source: playhead marks, typed times, transcript click / modifiers
-- **Captions** from the source transcript (clip-relative times) + SRT on export
-- **Export** H.264 + AAC into `videos/…/clips/`
-- **Optional Agent flow** — export markdown packs for an external LLM, import a lean clip-plan JSON (bring your own prompts; see [prompts/](prompts/))
+![Welcome screen with sources rail and onboarding paper](docs/images/welcome.png)
+
+### Editor — transcript + clip craft
+
+![Three-column editor with transcript, video, and clip controls](docs/images/editor.png)
+
+### Captions
+
+![Captions tab with clip-relative cues](docs/images/captions.png)
+
+### Agent handoff (optional)
+
+![Agent handoff tab for summary and clip packages](docs/images/agent-handoff.png)
+
+---
+
+## Two ways to use it
+
+### 1. Editor workflow (default for most people)
+
+Mark clips yourself from the transcript. Best when you already know the moments you want.
+
+1. **Ingest** a YouTube or X URL (download + local Whisper).
+2. **Play** the source; click transcript lines to seek.
+3. **Mark** start/end with **I** / **O**, typed times, or Set start / Set end.
+4. Optionally **Generate captions** → edit in the Captions tab.
+5. **Export clip** → `videos/…/clips/*.mp4` (+ `.srt` if captions exist).
+
+### 2. Agent workflow (optional)
+
+Use an **external** LLM (Grok, ChatGPT, Claude, etc.) for editorial judgment. clipgenerator never calls an LLM itself — it only exports markdown packages and imports a lean clip-plan JSON.
+
+```text
+Ingest → Agent handoff:
+  1) Export summary package (+ optional brief)
+  2) Draft / publish a summary post; paste its URL
+  3) Export clip package → refine in your LLM
+  4) Import clip-plan JSON
+→ Editor: trim, captions, encode
+```
+
+Full steps: [prompts/AGENT_PIPELINE.md](prompts/AGENT_PIPELINE.md). Schema: [prompts/CLIP_PLAN_SCHEMA.example.json](prompts/CLIP_PLAN_SCHEMA.example.json).
+
+Enable the **Agent handoff** tab:
+
+```bash
+# On by default when you use serve.sh
+./scripts/serve.sh
+
+# Editor-only (hide Agent handoff)
+CLIPGENERATOR_AGENT_FLOW=0 ./scripts/serve.sh
+```
+
+Brand-specific system prompts stay **out of this repo** — keep them in gitignored `prompts/private/` or only inside your LLM project. See [prompts/private/README.md](prompts/private/README.md).
+
+---
 
 ## Prerequisites
 
+| Tool | Why | Install (macOS) |
+|------|-----|-----------------|
+| **macOS + Apple Silicon** | MLX Whisper is optimized for M-series | — |
+| **Homebrew** | Installs CLI tools | [brew.sh](https://brew.sh) |
+| **yt-dlp** | Download YouTube / X | `brew install yt-dlp` |
+| **ffmpeg** | Normalize + export H.264/AAC | `brew install ffmpeg` |
+| **Python 3.10+** | API + Whisper | system or `brew install python` |
+| **Node.js 18+** | Vite UI | `brew install node` |
+
+Linux/Windows: the download/export scripts may work, but **local MLX Whisper expects Apple Silicon**. Other STT backends are not wired up yet.
+
+---
+
+## Install
+
 ```bash
-brew install yt-dlp ffmpeg
 git clone https://github.com/victorkung/clipgenerator-public.git
-cd clipgenerator-public   # or your local folder name
+cd clipgenerator-public
+
+# Python env + deps (includes mlx-whisper)
 python3 -m venv .venv
 source .venv/bin/activate
 pip install -r requirements.txt
+
+# Frontend
 cd app/frontend && npm install && cd ../..
+
+# Optional local config (never commit .env)
+cp .env.example .env
 ```
 
-**Apple Silicon (M-series)** is expected for MLX Whisper. First transcribe downloads model weights (default **`small`**).
+### Local Whisper (MLX) — what actually gets installed
 
-## Quick start — web UI
+Speech-to-text is **on-device** via [`mlx-whisper`](https://github.com/ml-explore/mlx-examples/tree/main/whisper):
 
-**Terminal 1 — API** (keep this running):
+1. `pip install -r requirements.txt` installs the Python package.
+2. The **first** transcription downloads model weights from Hugging Face (MLX community repos). That can take several minutes and needs disk space + network.
+3. Later runs reuse the cache (default Hugging Face cache, or `MODEL_DIR` / `HF_HOME` in `.env`).
+
+**UI / API models (daily driver):**
+
+| Model | Use when |
+|-------|----------|
+| **`small` (default)** | Any length. Fast enough for long English pods on M-series. |
+| **`medium`** | Harder audio / names / jargon; prefer shorter shows (~≤45–60 min). |
+
+CLI (`scripts/transcribe.py`) still accepts heavier sizes (`turbo`, `large-v3`, …) if you need them.
+
+Optional cache on an external drive — edit `.env`:
+
+```bash
+MODEL_DIR=/path/to/your/model-cache
+# or
+HF_HOME=/path/to/your/model-cache
+```
+
+No cloud STT API key is required on the happy path.
+
+---
+
+## Quick start
+
+**Terminal 1 — API** (keep running):
 
 ```bash
 ./scripts/serve.sh
 # → http://127.0.0.1:8787
-# Sets CLIPGENERATOR_AGENT_FLOW=1 by default (Agent flow tab).
-# Editor-only: CLIPGENERATOR_AGENT_FLOW=0 ./scripts/serve.sh
-# Do not use RELOAD=1 while long downloads/STT are running (restarts kill jobs).
+# Do not use RELOAD=1 while long downloads/STT are running.
 ```
 
 **Terminal 2 — UI**:
 
 ```bash
 cd app/frontend && npm run dev
-# → http://127.0.0.1:5173  (proxies /api → 8787)
+# → http://127.0.0.1:5173  (proxies /api → :8787)
 ```
 
-Then:
+Then in the browser:
 
-1. Paste a YouTube or X URL → **Ingest** (download + transcribe). Check duration — some X posts are short **promo clips**, not the full episode.
-2. Wait for status **ready** (stage pipeline + progress bar).
-3. Play video; transcript highlights by time; click a line to seek.
-4. **Set start** / **Set end** from the playhead, or type `m:ss` / `h:mm:ss` (Enter or **Apply** seeks the player + transcript).
-5. **Editor:** mark clips, optional captions, **Export clip**.
-6. **Agent flow** (optional tab): brief → summary package → paste summary URL → clip package → import JSON — [prompts/AGENT_PIPELINE.md](prompts/AGENT_PIPELINE.md).
-7. **Export clip** → `videos/…/clips/*.mp4` (+ `.srt` if captions exist). Burn-in onto video is not implemented yet.
+1. Paste a YouTube or X URL → **Add source**.
+2. Wait until status is **ready** (download + Whisper).
+3. Check **duration** — some X posts are short **promo clips**, not the full episode.
+4. Mark clips, optional captions, export.
 
-### Private editorial packs (optional)
-
-Brand-specific LLM instructions are **not** in this public repo. Keep them in a private folder or a separate private git remote under `prompts/private/` (gitignored except the public [prompts/private/README.md](prompts/private/README.md)). The app never requires a private pack — paste prompts into your LLM product of choice.
-
-### Editing clips
+### Editing cheatsheet
 
 | Action | How |
 |--------|-----|
-| Set start | Playhead → **Set start**, key **I**, or ⌥/Alt+click a transcript line |
-| Set end | Playhead → **Set end**, key **O**, or Shift+click a transcript line |
-| Type times | Start/End fields → Enter or **Apply** (jumps player + transcript to that time) |
-| Agent flow | Optional tab (`CLIPGENERATOR_AGENT_FLOW=1`) → packages + import |
-| Captions | **Generate captions** on the active clip → **Captions** tab to edit text; click a cue time to seek |
-| Post package | Collapsible under Export; copy post / summary URL for manual X posting |
-| New range on same video | **+ New clip** (Clips header) |
-| Rename source | Click the title or **Rename** |
-| Remove from sidebar | **×** or **Remove** (files on disk are kept) |
-| Retry STT | On error (video present) → **Retry transcribe** |
+| Set start | Playhead → **Set start**, key **I** |
+| Set end | Playhead → **Set end**, key **O** |
+| Type times | Start/End fields → Enter or **Apply** |
+| Seek from transcript | Click a line |
+| Captions | **Generate captions** → Captions tab |
+| Agent packages | Agent handoff tab → export / import |
+| New clip on same source | **Add clip** |
+| Open exports | **Open in Finder** |
 
-**Caption workflow note:** There is no separate clip-only player yet. You always scrub the long source; captions are stored **relative to the clip’s start** so they match the exported file. If you change in/out after generating, regenerate captions.
+**Caption note:** You scrub the **source** video. Captions are stored **relative to the clip start** so they match the exported file. If you change in/out after generating, regenerate captions. Burn-in onto the video is not implemented yet (SRT sidecar only).
 
-Library state: gitignored `data/library.json` (sidebar only). Media: gitignored `videos/`.
-
-### Folder layout
-
-The date prefix is the **ingest / posting day** (when you download it), not the original publish date — so you can group by the day you’re posting clips.
-
-```text
-videos/
-  2026-08-03 All-In Podcast/     ← today, if you ingested today
-    source.mp4
-    source.audio.m4a
-    source.transcript.json
-    source.transcript.txt
-    agent-export/                ← Agent Export (for Grok web)
-      summary/                   ← Summary agent package
-      clip/                      ← Clipping agent package
-    clips/
-      chamath-leverage-cf4c1e.mp4
-```
-
-Typical cleanup after upload: delete `source.mp4` (+ audio/transcript) to save space; later delete the whole folder. Removing a source from the UI only drops the library row, not disk files.
+---
 
 ## CLI (headless)
 
 ```bash
 ./scripts/download.sh "https://x.com/user/status/…"
-./scripts/transcribe.sh "videos/….mp4"              # default: small
-./scripts/transcribe.sh --model turbo "videos/….mp4"
+./scripts/transcribe.sh "videos/….mp4"                 # default: small
+./scripts/transcribe.sh --model medium "videos/….mp4"
 ./scripts/download.sh --with-subs "https://www.youtube.com/watch?v=…"
-./scripts/transcribe.sh "videos/….mp4"              # prefers free captions when present
 ```
 
-## Whisper models
+---
 
-Default is **`small`** with **segment** timestamps only (fast enough for clipping; no word-level karaoke timing).
+## Folder layout
 
-Listed **least → most powerful**. Pick by length and how hard the audio is — not auto-selected by duration.
+The date prefix is the **ingest / posting day** (when you download), not the original publish date.
 
-| Model | Power | When |
-|-------|-------|------|
-| **`small` (default)** | lightest | **Any length** daily driver. ~sub‑5 min STT on ~1.5h English pods (M-series). |
-| `medium` | mid | Stronger than small. Prefer **under ~45–60 min**, or when small mangles names/jargon. |
-| `turbo` | strong | Near-large quality, still relatively fast. Best upgrade for **long pods** that need accuracy. |
-| `large-v3` | max | Highest accuracy; slowest / most RAM. **Short clips** or very hard audio only. |
-
-Override in the UI dropdown or `--model`.
-
-Optional model cache (e.g. external SSD):
-
-```bash
-# .env (never commit)
-MODEL_DIR=/Volumes/YourDrive/Open Source Models
+```text
+videos/
+  2026-08-06 Show Name/
+    source.mp4
+    source.audio.m4a
+    source.transcript.json
+    source.transcript.txt
+    agent-export/              # optional Agent handoff packages
+      summary/
+      clip/
+    clips/
+      my-clip-abc123.mp4
+      my-clip-abc123.srt
 ```
 
-## Download notes
+Library sidebar state: gitignored `data/library.json`. Media: gitignored `videos/`.
 
-- Prefers ≥1080p H.264; always ensures H.264+AAC before finish
-- **8 concurrent HLS fragments** (`-N 8` in `config/yt-dlp.conf`); try `-N 16` if the CDN allows
-- Line-based download progress; X posts can attach full episodes (check duration banner)
-- `./scripts/download.sh -h`
+Removing a source from the UI drops the library row only — files on disk are kept.
+
+---
 
 ## Project layout
 
@@ -161,29 +230,49 @@ clipgenerator/
 ├── scripts/             # download, transcribe, serve
 ├── app/
 │   ├── backend/         # FastAPI: ingest, clips, export, agent packages
-│   └── frontend/        # Vite + React UI + design tokens
+│   └── frontend/        # Vite + React (Desk theme)
+├── brand/               # logo, marks, favicons (source of truth)
 ├── prompts/             # public agent-pipeline docs + clip-plan schema
 │   └── private/         # your packs only (gitignored) — see private/README.md
+├── docs/                # design notes + README screenshots
 ├── config/yt-dlp.conf
-├── docs/                # design notes
 ├── data/                # library.json (gitignored)
 └── videos/              # media (gitignored)
 ```
 
-## Releases
+---
 
-We document user-facing changes in **[CHANGELOG.md](CHANGELOG.md)** under Keep a Changelog sections (`Added` / `Changed` / `Fixed`).
+## Public repo policy (single repo)
 
-When shipping a tagged release:
+This project is meant to be **one public daily-driver repository**. Anyone can clone and run it; keep personal material out of git.
 
-```bash
-# after merging/committing on main
-git tag -a v0.2.0 -m "v0.2.0 — multi-clip UI + local Whisper"
-git push origin main --tags
-# optional: gh release create v0.2.0 --notes-file CHANGELOG.md
-```
+| Commit | Do not commit |
+|--------|----------------|
+| App source, scripts, public prompts, brand, docs, screenshots | `.env` (API keys / local paths) |
+| `.env.example` with placeholders only | `videos/`, `data/` |
+| Generic `prompts/` pipeline docs | `prompts/private/**` (except its public README) |
+| | `.venv/`, `node_modules/`, transcripts, audio sidecars |
 
-Bump the version header in `CHANGELOG.md` for each public drop.
+Details and checklist: **[docs/PUBLIC_REPO.md](docs/PUBLIC_REPO.md)**.
+
+Private editorial packs (Option B): keep them local under `prompts/private/` or in a separate private repo/submodule — the app does not load them at runtime.
+
+---
+
+## Troubleshooting
+
+| Issue | Fix |
+|-------|-----|
+| `mlx-whisper is not installed` | `source .venv/bin/activate && pip install -r requirements.txt` |
+| First STT is slow | Model weights downloading; later runs use cache. Prefer `small`. |
+| STT / download dies mid-job | Don’t run `RELOAD=1` on the API while jobs run |
+| Fans / heat on long pods | Normal under MLX; plug in |
+| UI can’t reach API | `./scripts/serve.sh` on 8787; Vite on 5173 |
+| Export silent / broken audio | Re-export (libx264 + AAC). Delete old bad clip files. |
+| Export feels stuck | Watch export progress; long clips re-encode |
+| X video is only ~30s | Promo clip — full episode may be on YouTube/Spotify/RSS |
+
+---
 
 ## Responsible use
 
@@ -193,23 +282,30 @@ Bump the version header in `CHANGELOG.md` for each public drop.
 - Keep `.env`, `data/`, and `videos/` private (gitignored).
 - Localhost only — do not expose the API to the public internet.
 
+---
+
+## Releases
+
+User-facing changes live in **[CHANGELOG.md](CHANGELOG.md)** (`Added` / `Changed` / `Fixed`).
+
+```bash
+git tag -a v0.3.0 -m "v0.3.0 — desk UI + public packaging"
+git push origin main --tags
+```
+
+---
+
 ## Roadmap
 
 | Status | Scope |
 |--------|--------|
-| **Shipped** | Local Whisper, multi-clip UI, captions + SRT, agent package export/import, design system |
+| **Shipped** | Local Whisper, multi-clip UI, captions + SRT, agent package export/import, Desk design system |
 | **Later** | Caption burn-in on export, richer publish board, optional schedulers |
 
-## Troubleshooting
+## For AI coding agents
 
-| Issue | Fix |
-|-------|-----|
-| `mlx-whisper is not installed` | `source .venv/bin/activate && pip install -r requirements.txt` |
-| First STT is slow | Model download; later runs use cache. Prefer `small` / `turbo`. |
-| STT / download dies mid-job | Don’t run `RELOAD=1` on the API while jobs run |
-| Fans / heat on long pods | Normal under MLX; plug in |
-| UI can’t reach API | `./scripts/serve.sh` on 8787; Vite on 5173 |
-| Export silent / broken audio | Re-export after the 0.2 fix (libx264 + AAC, accurate seek). Delete old bad clip files. |
-| Export feels stuck | Watch the yellow/green banner; long clips re-encode and take a moment |
+Auto-load **[AGENTS.md](AGENTS.md)** first (product map + git rules). Prefer that over re-exploring the tree. Recent changes: `CHANGELOG.md` → `[Unreleased]`.
+
+---
 
 Formerly known in git history as `yt-x-vid-downloader-transcriber`.

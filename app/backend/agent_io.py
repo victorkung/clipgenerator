@@ -101,48 +101,40 @@ def build_clip_reference_md(source: dict[str, Any]) -> str:
 
 
 def build_clip_prompt_md(source: dict[str, Any]) -> str:
+    custom = (source.get("clip_prompt_text") or "").strip()
+    if custom:
+        return custom if custom.endswith("\n") else custom + "\n"
+
     duration = source.get("duration")
     length_note = "_(unknown — infer from transcript)_"
-    volume = "present **top 3–4** (episode ≤ ~2 hours rule)"
     if duration is not None:
         d = float(duration)
         length_note = f"{format_ts_label(d)} ({d / 3600:.2f} h)"
-        if d > 2 * 3600:
-            volume = "present **at least 5–6** (episode > ~2 hours rule)"
-        else:
-            volume = "present **top 3–4** (episode ≤ ~2 hours rule)"
 
     summary_url = (source.get("summary_post_url") or "").strip()
     summary_block = summary_url or "_(paste summary post URL into clipgenerator before export)_"
 
     return "\n".join(
         [
-            "# Episode task (clip agent)",
+            "# Clip plan generation",
             "",
-            "Follow the Clipping project **custom instructions**.",
+            "You are an external LLM agent. clipgenerator transcribed the source and packaged",
+            "the files below so you can propose clip ranges and post text.",
             "",
             f"**Episode length:** {length_note}",
-            f"**Shortlist rule for this episode:** {volume}",
+            f"**Summary post URL (context / quote target):** {summary_block}",
             "",
-            "## Distribution",
+            "## What to produce",
             "",
-            f"**Primary quote target (summary post):** {summary_block}",
-            "",
-            "Draft clip posts to be published as **quotes of that summary post**.",
-            "Secondary options only if the user asks (standalone / quote original episode).",
-            "",
-            "## Process (mandatory)",
-            "",
-            "1. **Shortlist only first** — timestamps + one-line why. No full post drafts yet.",
-            "2. After I select clips: work **one clip at a time** until I approve each.",
-            "3. I will verify ranges in clipgenerator and give trim feedback.",
-            "4. When I say **export for clipgenerator**, output a **minimal** import JSON for **approved clips only** (X only).",
-            "   Required per clip: title, t_in/t_out (seconds or labels), post_text. Optional: tags, why.",
-            "   Do **not** include TikTok/Shorts/Reels captions, scores, hooks, or other unused packaging fields.",
+            "1. Shortlist candidate clips with in/out times (seconds or M:SS) and a one-line why.",
+            "2. After the human approves ranges, draft post text per clip.",
+            "3. When asked, output **import JSON** for clipgenerator:",
+            "   per clip: `title`, `t_in`, `t_out`, `post_text`; optional `tags`, `why`.",
             "",
             "## Files in this package",
             "",
             "- `01-reference.md` — source URL + summary post URL",
+            "- `02-prompt.md` — this prompt (editable in clipgenerator before export)",
             "- `03-transcript.md` — full timestamped transcript",
             "",
         ]
@@ -168,34 +160,34 @@ def build_summary_reference_md(source: dict[str, Any]) -> str:
 
 
 def build_summary_prompt_md(source: dict[str, Any]) -> str:
+    custom = (source.get("summary_prompt_text") or "").strip()
+    if custom:
+        return custom if custom.endswith("\n") else custom + "\n"
+
     url = (source.get("url") or "").strip() or "_(see 01-reference.md)_"
     return "\n".join(
         [
-            "# New summary request",
+            "# Summary post generation",
             "",
-            "Follow the Summary project **custom instructions**.",
+            "You are an external LLM agent. clipgenerator already transcribed the source video",
+            "and packaged the files below. Use them to draft a **summary post** for the episode.",
             "",
-            "## Original X post",
+            "## Source",
             "",
             url,
             "",
-            "## Instructions",
+            "## What to produce",
             "",
-            "Please draft the recap following the exact current project format:",
+            "1. A summary / recap post suitable for social (edit with the human until ready).",
+            "2. Optional short follow-up posts if the human asks.",
             "",
-            "1. **Summary post** — to be posted as a **quote** of the original",
-            "2. **Reply post** — short teaser reply **under the original** for distribution",
-            "",
-            "Use the high-level brief (if provided) for themes and the full transcript as the",
-            "source of truth for accuracy and timestamps.",
+            "Treat the transcript as the source of truth for quotes and accuracy.",
             "",
             "## Files in this package",
             "",
-            "- `01-reference.md` — source URL / meta",
+            "- `01-reference.md` — title, source URL, duration",
+            "- `02-prompt.md` — this prompt (editable in clipgenerator before export)",
             "- `03-transcript.md` — full timestamped transcript",
-            "- `04-brief.md` — optional high-level brief (themes) for the summary agent",
-            "",
-            "We will edit together until both posts are ready for approval.",
             "",
         ]
     )
@@ -248,7 +240,6 @@ def write_summary_export(
             "01-reference.md": build_summary_reference_md(source),
             "02-prompt.md": build_summary_prompt_md(source),
             "03-transcript.md": transcript,
-            "04-brief.md": build_summary_brief_md(source),
         },
     )
     return {"dir": str(out_dir), "root": str(root), "files": files, "kind": "summary"}

@@ -143,7 +143,9 @@ def make_source(
         "error": None,
         "model": None,
         # Agent flow (optional / feature-flagged UI)
-        "podbrief_text": None,  # → summary/04-podbrief.md
+        "podbrief_text": None,  # legacy optional notes (no longer exported)
+        "summary_prompt_text": None,  # overrides summary/02-prompt.md when set
+        "clip_prompt_text": None,  # overrides clip/02-prompt.md when set
         "summary_post_url": None,  # X URL of published summary (clip quote target)
         "clips": [],
         "created_at": now,

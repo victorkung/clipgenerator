@@ -1,6 +1,6 @@
 # clipgenerator — Design review & redesign plan
 
-**Status:** Approved and implemented (Phases 0–4) — see `CHANGELOG.md` `[Unreleased]`  
+**Status:** Superseded by the **Desk** theme (Claude Design handoff, 2026-08). See `app/frontend/DESIGN.md` and `CHANGELOG.md` `[Unreleased]`.  
 **Scope:** End-to-end product/UI/UX + brand for the local daily-driver monorepo  
 **Audience:** Product owner + implementer (this agent)  
 **Code anchors:** `app/frontend/src/App.jsx`, `app/frontend/src/styles/*`, `app/frontend/DESIGN.md`

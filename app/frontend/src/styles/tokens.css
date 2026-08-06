@@ -1,162 +1,135 @@
 /**
- * clipgenerator — high-contrast dark studio tokens
- * Surfaces step clearly; controls are solid (not glass mush).
- * See app/frontend/DESIGN.md
+ * clipgenerator — "Desk" theme tokens
+ * Drop-in replacement for app/frontend/src/styles/tokens.css
+ * Warm editorial desk: one paper surface (the transcript), everything else warm ink.
+ * Terracotta is the red pen. Highlighter wash = clip range. No glow, no gradients.
+ *
+ * oklch() values are authoritative; hex in comments is the approximate fallback.
  */
 
 :root {
   color-scheme: dark;
 
-  /* ——— Canvas & surfaces (clear elevation steps) ——— */
-  --color-bg: #050506;
-  --color-surface: #141416;
-  --color-surface-raised: #1c1c20;
-  --color-surface-overlay: #242428;
-  --color-surface-sunken: #0a0a0c;
-  --color-sidebar: #0e0e11;
-  --color-border: rgba(255, 255, 255, 0.14);
-  --color-border-subtle: rgba(255, 255, 255, 0.09);
-  --color-border-strong: rgba(255, 255, 255, 0.2);
-  --color-border-focus: rgba(251, 191, 36, 0.65);
+  /* ——— Ink surfaces (the room) ——— */
+  --color-bg: #14110f;                 /* app canvas */
+  --color-surface: #1b1714;            /* craft panel / header */
+  --color-surface-raised: #221d19;     /* inputs, nested controls */
+  --color-surface-overlay: #2a231e;    /* kbd chips, hover fills */
+  --color-surface-sunken: #100e0c;     /* center column behind the paper */
+  --color-sidebar: #171310;            /* Sources + Clips rail */
+  --color-selection-bg: #241e19;       /* active source / clip row */
+  --color-selection-border: oklch(.58 .13 40);   /* #a75a35 — 2px inset left edge */
 
-  --color-text: #fafafa;
-  --color-text-secondary: #c4c4cc;
-  --color-text-tertiary: #9b9ba6;
-  --color-text-muted: #6e6e78;
-  --color-on-accent: #141416;
-  --color-on-success: #052e1c;
+  --color-border: rgba(255, 255, 255, 0.10);
+  --color-border-subtle: rgba(255, 255, 255, 0.06);
+  --color-border-strong: rgba(255, 255, 255, 0.16);
+  --color-border-focus: oklch(.58 .13 40 / .55);
 
-  /* Amber craft accent */
-  --color-accent: #fbbf24;
-  --color-accent-strong: #f59e0b;
-  --color-accent-hover: #fcd34d;
-  --color-accent-muted: rgba(245, 158, 11, 0.18);
-  --color-accent-ring: rgba(251, 191, 36, 0.35);
-  --color-accent-glow: rgba(245, 158, 11, 0.28);
+  /* ——— Paper surface (the transcript / captions / post text) ——— */
+  --color-paper: #f4efe4;
+  --color-paper-text: #1a1814;         /* in-range + active lines */
+  --color-paper-text-2: #2e2a24;       /* out-of-range lines (darker for contrast) */
+  --color-paper-meta: #5c564c;         /* legends on paper */
+  --color-paper-mono: #6a6358;         /* timestamps on paper */
+  --color-paper-rule: rgba(0, 0, 0, 0.12);
+  --shadow-paper: 0 18px 50px rgba(0, 0, 0, 0.45);
 
-  --color-tab-active-bg: rgba(245, 158, 11, 0.16);
-  --color-selection-border: rgba(251, 191, 36, 0.5);
-  --color-selection-bg: rgba(245, 158, 11, 0.12);
-  --color-selection-bg-strong: linear-gradient(
-    135deg,
-    rgba(245, 158, 11, 0.2) 0%,
-    rgba(245, 158, 11, 0.08) 100%
-  );
+  /* ——— Ink text ladder ——— */
+  --color-text: #eee7db;
+  --color-text-secondary: #c9bfae;
+  --color-text-tertiary: #a09789;
+  --color-text-muted: #8c8175;
+  --color-text-faint: #6e655c;
+  --color-on-accent: #fff5ea;
 
-  /* Solid control fills — not 4% white glass */
-  --color-btn-default-bg: #2a2a32;
-  --color-btn-hover-bg: #36363f;
-  --color-btn-hover-border: rgba(255, 255, 255, 0.22);
-  --color-control-fill: #2a2a32;
-  --color-input-fill: #25252b;
-  --color-dot-idle: #4a4a54;
+  /* ——— Accent: terracotta = the red pen ——— */
+  --color-accent: oklch(.58 .13 40);          /* #a75a35 primary fill, playhead, mark rules */
+  --color-accent-hover: oklch(.68 .13 40);    /* #c9713f wordmark tagline, hover */
+  --color-accent-ink: oklch(.55 .15 38);      /* #a1502c accent ON paper (margin marks, cue times) */
+  --color-accent-muted: oklch(.58 .13 40 / .35);
+  --color-accent-ring: oklch(.58 .13 40 / .18);
 
-  --color-success: #34d399;
-  --color-success-strong: #10b981;
-  --color-success-muted: rgba(52, 211, 153, 0.16);
-  --color-success-border: rgba(52, 211, 153, 0.45);
-  --color-warning: #fbbf24;
-  --color-warning-muted: rgba(251, 191, 36, 0.14);
-  --color-warning-border: rgba(251, 191, 36, 0.35);
-  --color-danger: #fb7185;
-  --color-danger-muted: rgba(251, 113, 133, 0.14);
-  --color-danger-border: rgba(251, 113, 133, 0.4);
+  /* ——— Clip range = highlighter, not a border ——— */
+  --color-clip-range: oklch(.92 .07 88 / .85);   /* #f5e6c0 in-range transcript line */
+  --color-playing: oklch(.88 .10 78 / .95);      /* #f0d9ae line under the playhead */
+  --color-range-strip: oklch(.70 .12 78);        /* #c69a4a active clip bar on the ruler */
+  --color-range-strip-ghost: oklch(.70 .12 78 / .5); /* other clips' lanes */
 
-  --color-clip-range: rgba(52, 211, 153, 0.14);
-  --color-playing: rgba(251, 191, 36, 0.16);
-  --color-video-bg: #000000;
-  --color-caption-bg: rgba(0, 0, 0, 0.8);
+  /* ——— Status ——— */
+  --color-success: oklch(.70 .12 145);        /* #4fa96f ready / rendered */
+  --color-success-bg: oklch(.70 .12 145 / .10);
+  --color-warning: oklch(.75 .12 78);         /* #c8913f in progress, stale, short source */
+  --color-warning-text: oklch(.88 .08 82);    /* #e8cd9a */
+  --color-warning-bg: oklch(.80 .10 78 / .12);
+  --color-danger: oklch(.60 .17 22);          /* #b8443c */
+  --color-danger-text: oklch(.82 .10 22);     /* #e89b90 */
+  --color-danger-bg: oklch(.55 .16 22 / .12);
 
-  /* Timeline — legible instrument */
-  --color-timeline-track: #2a2a32;
-  --color-timeline-tick: rgba(255, 255, 255, 0.08);
-  --color-timeline-range: linear-gradient(
-    90deg,
-    #34d399 0%,
-    #10b981 100%
-  );
-  --color-timeline-playhead: var(--color-accent);
-
-  --glow-accent: rgba(245, 158, 11, 0.08);
-  --glow-success: rgba(52, 211, 153, 0.05);
-  --mesh-a: rgba(245, 158, 11, 0.07);
-  --mesh-b: rgba(99, 102, 241, 0.045);
+  --color-video-bg: #0d0c0b;
+  --color-caption-bg: rgba(0, 0, 0, 0.75);
 
   /* ——— Fonts ——— */
-  --font-sans: "Inter", ui-sans-serif, system-ui, -apple-system, sans-serif;
-  --font-mono: "JetBrains Mono", ui-monospace, SFMono-Regular, Menlo, monospace;
+  --font-serif: "Newsreader", ui-serif, Georgia, serif;   /* anything a human wrote */
+  --font-sans: "Instrument Sans", ui-sans-serif, system-ui, sans-serif; /* controls */
+  --font-mono: "IBM Plex Mono", ui-monospace, Menlo, monospace;         /* times only */
 
   /* ——— Type ——— */
-  --text-xs: 0.6875rem;
-  --text-sm: 0.8125rem;
-  --text-md: 0.875rem;
-  --text-lg: 0.9375rem;
-  --text-xl: 1.25rem;
-  --text-2xl: 1.625rem;
-  --text-3xl: 2rem;
+  --text-display: 34px;   /* empty-state headline, serif 500 */
+  --text-title: 22px;     /* source title, serif 500 */
+  --text-title-sm: 17px;  /* alert headlines, serif 400 */
+  --text-read: 15px;      /* transcript body, serif 400, line-height 1.75 */
+  --text-read-sm: 14px;   /* caption cue text, serif 400, line-height 1.6 */
+  --text-list: 13.5px;    /* clip / source titles, serif */
+  --text-ui: 12.5px;      /* buttons, labels */
+  --text-ui-sm: 11.5px;   /* secondary text actions */
+  --text-time: 15px;      /* in/out fields, mono 500 */
+  --text-meta: 10.5px;    /* mono meta lines */
+  --text-label: 10px;     /* mono caps section labels, tracking .14em */
 
-  --leading-tight: 1.15;
-  --leading-snug: 1.35;
-  --leading-normal: 1.5;
-  --leading-relaxed: 1.65;
+  --leading-read: 1.75;
+  --leading-normal: 1.6;
+  --leading-tight: 1.2;
+  --tracking-label: 0.14em;
+  --tracking-title: -0.01em;
 
-  --weight-regular: 400;
-  --weight-medium: 500;
-  --weight-semibold: 600;
-  --weight-bold: 700;
+  /* ——— Spacing (4px grid) ——— */
+  --space-1: 2px;
+  --space-2: 4px;
+  --space-3: 6px;
+  --space-4: 8px;
+  --space-5: 10px;
+  --space-6: 12px;
+  --space-7: 14px;
+  --space-8: 18px;
+  --space-9: 22px;
+  --space-10: 26px;
 
-  --tracking-label: 0.06em;
-  --tracking-title: -0.03em;
-  --tracking-tight: -0.02em;
+  /* ——— Radius: the desk is square ——— */
+  --radius-xs: 1px;   /* ruler strips */
+  --radius-sm: 2px;   /* EVERYTHING else: buttons, inputs, cards, paper, banners */
 
-  /* ——— Spacing ——— */
-  --space-1: 0.25rem;
-  --space-2: 0.5rem;
-  --space-3: 0.75rem;
-  --space-4: 1rem;
-  --space-5: 1.25rem;
-  --space-6: 1.5rem;
-  --space-8: 2rem;
-  --space-10: 2.5rem;
-  --space-12: 3rem;
+  /* ——— Elevation: only the paper floats ——— */
+  --shadow-none: none;
 
-  /* ——— Radius ——— */
-  --radius-xs: 4px;
-  --radius-sm: 6px;
-  --radius-md: 10px;
-  --radius-lg: 14px;
-  --radius-xl: 18px;
-  --radius-pill: 999px;
-  --radius-tab: 8px;
-
-  /* ——— Elevation ——— */
-  --shadow-xs: 0 1px 0 rgba(255, 255, 255, 0.05) inset;
-  --shadow-sm: 0 1px 2px rgba(0, 0, 0, 0.4), 0 1px 0 rgba(255, 255, 255, 0.04) inset;
-  --shadow-md: 0 4px 16px rgba(0, 0, 0, 0.4), 0 0 0 1px rgba(255, 255, 255, 0.06);
-  --shadow-lg: 0 12px 40px rgba(0, 0, 0, 0.5), 0 0 0 1px rgba(255, 255, 255, 0.07);
-  --shadow-primary: 0 1px 0 rgba(255, 255, 255, 0.28) inset,
-    0 4px 16px var(--color-accent-glow);
-  --shadow-primary-hover: 0 1px 0 rgba(255, 255, 255, 0.32) inset,
-    0 8px 24px rgba(245, 158, 11, 0.4);
-  --shadow-mark: 0 0 0 1px rgba(0, 0, 0, 0.4), 0 6px 20px rgba(245, 158, 11, 0.3);
-  --shadow-success: 0 1px 0 rgba(255, 255, 255, 0.2) inset,
-    0 4px 12px rgba(16, 185, 129, 0.3);
-
-  /* ——— Motion ——— */
+  /* ——— Motion: quiet ——— */
   --ease-out: cubic-bezier(0.16, 1, 0.3, 1);
-  --ease-spring: cubic-bezier(0.34, 1.56, 0.64, 1);
   --duration-fast: 120ms;
   --duration-normal: 180ms;
-  --duration-slow: 280ms;
 
   /* ——— Controls ——— */
-  --control-h-sm: 30px;
-  --control-h-md: 36px;
-  --control-h-lg: 40px;
+  --control-h-lg: 36px;   /* Export clip (primary) */
+  --control-h-md: 34px;   /* header controls, in/out fields, title field */
+  --control-h-sm: 32px;   /* Retry, Reveal, Regenerate */
+  --control-h-xs: 28px;   /* Set in / Set out, inline actions */
 
   /* ——— Layout ——— */
-  --sidebar-w: 272px;
-  --header-h: 64px;
+  --header-h: 56px;
+  --sidebar-w: 248px;
+  --craft-w: 504px;
+  --monitor-h: 320px;
+  --ruler-h: 44px;
+  --paper-measure: 600px; /* transcript reading measure */
+  --app-max-w: 1680px;    /* keep desk from stretching on ultrawide */
   --z-header: 20;
   --z-overlay: 30;
 }

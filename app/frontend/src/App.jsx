@@ -9,7 +9,7 @@ const DEFAULT_STAGES = [
   { id: "done", label: "Ready" },
 ];
 
-/** Least → most powerful. Labels stay short; `guide` is the length/when-to-use hint. */
+/** Daily-driver models only. Labels stay short; `guide` is the when-to-use hint. */
 const WHISPER_MODELS = [
   {
     id: "small",
@@ -23,22 +23,74 @@ const WHISPER_MODELS = [
     guide:
       "Stronger than small. Prefer under ~45–60 min, or when small mangles names/jargon.",
   },
-  {
-    id: "turbo",
-    label: "turbo · strong",
-    guide:
-      "Near-large quality, still relatively fast. Best upgrade for long pods that need accuracy.",
-  },
-  {
-    id: "large-v3",
-    label: "large-v3 · max",
-    guide:
-      "Highest accuracy; slowest & most RAM. Short clips or very hard audio only.",
-  },
 ];
 
 /** Soft threshold for “this might be a promo clip, not the full episode.” */
 const SHORT_SOURCE_SECS = 90;
+
+const LS_SUMMARY_PROMPT = "clipgenerator.agent.summaryPrompt";
+const LS_CLIP_PROMPT = "clipgenerator.agent.clipPrompt";
+
+/** Default summary-agent prompt (shared across all sources; editable). */
+const DEFAULT_SUMMARY_PROMPT = `# Summary post generation
+
+You are an external LLM agent. clipgenerator already transcribed the source video and packaged the files in this folder. Use them to draft a **summary post** for the episode.
+
+## What to produce
+
+1. A summary / recap post suitable for social (edit with the human until ready).
+2. Optional short follow-up posts if the human asks.
+
+Treat the transcript as the source of truth for quotes and accuracy.
+
+## Files in this package
+
+- \`01-reference.md\` — title, source URL, duration
+- \`02-prompt.md\` — this prompt
+- \`03-transcript.md\` — full timestamped transcript
+`;
+
+/** Default clip-agent prompt (shared across all sources; editable). */
+const DEFAULT_CLIP_PROMPT = `# Clip plan generation
+
+You are an external LLM agent. clipgenerator transcribed the source and packaged the files below so you can propose clip ranges and post text.
+
+Use the **summary post URL** in \`01-reference.md\` as context (and as a quote target when relevant).
+
+## What to produce
+
+1. Shortlist candidate clips with in/out times (seconds or M:SS) and a one-line why.
+2. After the human approves ranges, draft post text per clip.
+3. Output **import JSON** that clipgenerator can load to create clips. Shape must match the clip plan schema — see the example linked in the app (**CLIP_PLAN_SCHEMA.example.json**).
+
+Required per clip: \`title\`, \`t_in\`, \`t_out\`, \`post_text\`. Optional: \`tags\`, \`why\`.
+
+That JSON is what populates the clip list in clipgenerator for trim, captions, and media export.
+
+## Files in this package
+
+- \`01-reference.md\` — source URL + summary post URL
+- \`02-prompt.md\` — this prompt
+- \`03-transcript.md\` — full timestamped transcript
+`;
+
+function loadSharedPrompt(key, fallback) {
+  try {
+    const v = localStorage.getItem(key);
+    if (v != null && v.trim()) return v;
+  } catch {
+    /* ignore */
+  }
+  return fallback;
+}
+
+function saveSharedPrompt(key, value) {
+  try {
+    localStorage.setItem(key, value ?? "");
+  } catch {
+    /* ignore */
+  }
+}
 
 function stageIndex(stage, stages) {
   const ids = stages.map((s) => s.id);
@@ -57,13 +109,51 @@ function stageIndex(stage, stages) {
   return i < 0 ? 0 : i;
 }
 
-function pillStatus(status) {
-  if (status === "ready" || status === "rendered") return "pill pill--ready";
-  if (status === "error") return "pill pill--error";
+function statusWordClass(status) {
+  if (status === "ready" || status === "rendered") return "status-word status-word--ready";
+  if (status === "error") return "status-word status-word--error";
   if (["pending", "downloading", "transcribing", "queued"].includes(status)) {
-    return "pill pill--progress";
+    return "status-word status-word--progress";
   }
-  return "pill";
+  if (status === "plan") return "status-word status-word--plan";
+  return "status-word";
+}
+
+function formatDurationHuman(secs) {
+  if (secs == null || !Number.isFinite(secs)) return "—";
+  const s = Math.max(0, Math.round(secs));
+  const m = Math.floor(s / 60);
+  const r = s % 60;
+  if (m <= 0) return `${r}s`;
+  if (m < 60) return `${m} min ${r}`;
+  const h = Math.floor(m / 60);
+  return `${h}h ${m % 60}m`;
+}
+
+/** Shorten absolute export paths to `/clips/…` for the status panel. */
+function shortExportPath(path) {
+  if (!path) return path;
+  const s = String(path);
+  const i = s.lastIndexOf("/clips/");
+  if (i >= 0) return s.slice(i);
+  const j = s.lastIndexOf("clips/");
+  if (j >= 0) return `/${s.slice(j)}`;
+  return s;
+}
+
+/** Ensure @handles appear as the last line of post text (blank line above). */
+function postWithHandles(postText, tags) {
+  const handleLine = (tags || []).filter(Boolean).join(" ").trim();
+  const body = postText || "";
+  if (!handleLine) return body;
+  const trimmed = body.replace(/\s+$/, "");
+  if (trimmed.endsWith(handleLine)) return body;
+  // Avoid duplicating if handles already appear at the end after whitespace
+  const lines = trimmed.split("\n");
+  const last = (lines[lines.length - 1] || "").trim();
+  if (last === handleLine) return body;
+  if (!trimmed) return handleLine;
+  return `${trimmed}\n\n${handleLine}`;
 }
 
 function statusRank(status) {
@@ -82,78 +172,101 @@ function CutMarkSvg() {
       xmlns="http://www.w3.org/2000/svg"
       aria-hidden
     >
-      {/* In/out brackets + playhead — local clip studio mark */}
       <path
-        d="M5 6.5V5h3M5 17.5V19h3M19 6.5V5h-3M19 17.5V19h-3"
+        d="M7 5H4v14h3M17 5h3v14h-3"
         stroke="currentColor"
-        strokeWidth="1.75"
+        strokeWidth="1.6"
         strokeLinecap="round"
         strokeLinejoin="round"
       />
-      <path
-        d="M8 12h8"
-        stroke="currentColor"
-        strokeWidth="1.5"
-        strokeLinecap="round"
-        opacity="0.55"
-      />
-      <circle cx="12" cy="12" r="1.75" fill="currentColor" />
+      <circle cx="12" cy="12" r="2" fill="currentColor" />
     </svg>
   );
 }
 
-function BrandMark() {
-  return (
-    <div className="brand-mark" title="clipgenerator" aria-hidden>
-      <CutMarkSvg />
-    </div>
-  );
-}
 
 function JobStatus({
   busy,
   message,
+  title,
   percent,
+  paths,
   onDismiss,
   onReveal,
-  revealLabel = "Reveal in Finder",
+  revealLabel = "Open in Finder",
+  variant, // "success" | "error" | undefined (auto)
 }) {
-  if (!message) return null;
+  const hasBody = !!(message || (paths || []).length || busy || title);
+  if (!hasBody) return null;
+  const tone =
+    variant ||
+    (busy ? "busy" : "done");
   return (
     <div
-      className={`job-status ${busy ? "job-status--busy" : "job-status--done"}`}
+      className={`job-status job-status--${tone}`}
       role="status"
       aria-live="polite"
     >
-      <div className="job-status__row">
-        {busy && <span className="banner__spinner" />}
-        <span className="job-status__text">
-          {message}
-          {busy && percent != null && (
-            <span className="banner__pct"> · {percent}%</span>
-          )}
-        </span>
-        {!busy && (
-          <div className="job-status__actions">
-            {onReveal && (
-              <button type="button" className="btn btn--sm" onClick={onReveal}>
-                {revealLabel}
-              </button>
+      {onDismiss && !busy && (
+        <button
+          type="button"
+          className="job-status__close"
+          onClick={(e) => {
+            e.preventDefault();
+            e.stopPropagation();
+            onDismiss();
+          }}
+          title="Dismiss"
+          aria-label="Dismiss"
+        >
+          ×
+        </button>
+      )}
+      {(title || busy) && (
+        <div className="job-status__title">
+          {busy && <span className="banner__spinner" />}
+          <span>
+            {busy
+              ? message || "Working…"
+              : title || (tone === "error" ? "Export failed" : "Export success")}
+            {busy && percent != null && (
+              <span className="banner__pct"> · {percent}%</span>
             )}
-            {onDismiss && (
-              <button type="button" className="btn btn--sm btn--ghost" onClick={onDismiss}>
-                Dismiss
-              </button>
-            )}
-          </div>
-        )}
-      </div>
+          </span>
+        </div>
+      )}
+      {!busy && message && title && (
+        <p className="job-status__detail">{message}</p>
+      )}
+      {!busy && message && !title && (
+        <div className="job-status__row">
+          <span className="job-status__text">{message}</span>
+        </div>
+      )}
+      {!busy && paths?.length > 0 && (
+        <div className="job-status__paths">
+          {paths.map((p) => (
+            <code key={p}>{p}</code>
+          ))}
+        </div>
+      )}
       {busy && percent != null && (
         <div className="banner__track" aria-hidden>
           <div
             className="banner__fill"
             style={{ width: `${Math.min(100, Math.max(2, percent))}%` }}
           />
+        </div>
+      )}
+      {!busy && onReveal && (
+        <div className="job-status__footer">
+          <button
+            type="button"
+            className="btn btn--sm btn--success"
+            onClick={onReveal}
+          >
+            {revealLabel}
+          </button>
         </div>
       )}
     </div>
@@ -174,6 +287,16 @@ function PipelineProgress({ source }) {
 
   return (
     <div className="pipeline">
+      <p className="pipeline__headline">
+        {msg || "Working on this source…"}
+        {typeof percent === "number" ? ` — ${percent}% of the way through.` : ""}
+      </p>
+      <div className="pipeline__track">
+        <div
+          className="pipeline__fill"
+          style={{ width: `${Math.min(100, Math.max(2, percent))}%` }}
+        />
+      </div>
       <div className="pipeline__steps">
         {stages.map((st, i) => {
           let cls = "pipeline__step";
@@ -183,22 +306,20 @@ function PipelineProgress({ source }) {
           return (
             <div key={st.id} className={cls}>
               <div className="pipeline__dot" />
-              <span>{st.label}</span>
+              <span>
+                {st.label}
+                {i < idx ? " ✓" : ""}
+                {i === idx && typeof percent === "number" ? ` · ${percent}%` : ""}
+              </span>
             </div>
           );
         })}
       </div>
-      <div className="pipeline__track">
-        <div
-          className="pipeline__fill"
-          style={{ width: `${Math.min(100, Math.max(2, percent))}%` }}
-        />
-      </div>
-      <div className="pipeline__meta">
-        <span className="pipeline__pct">{percent}%</span>
-        <span>{msg}</span>
-      </div>
       {detail && <p className="pipeline__detail">{detail}</p>}
+      <p className="pipeline__detail">
+        you can switch to a ready source and come back — the job keeps running · nothing
+        uploads
+      </p>
     </div>
   );
 }
@@ -226,6 +347,8 @@ export default function App() {
   const [exportBusy, setExportBusy] = useState(false);
   const [exportPercent, setExportPercent] = useState(null);
   const [exportPath, setExportPath] = useState(null);
+  const [exportStatusOpen, setExportStatusOpen] = useState(false);
+  const [exportFailed, setExportFailed] = useState(false);
   const [captionsBusy, setCaptionsBusy] = useState(false);
   const [captionsMsg, setCaptionsMsg] = useState(null);
   const [agentBusy, setAgentBusy] = useState(false);
@@ -233,16 +356,19 @@ export default function App() {
   const [agentMsgStep, setAgentMsgStep] = useState(null); // summary | clip | import
   const [planImportText, setPlanImportText] = useState("");
   const [planImportBusy, setPlanImportBusy] = useState(false);
-  const [rightPane, setRightPane] = useState("transcript"); // transcript | captions
-  const [mainTab, setMainTab] = useState("editor"); // editor | agent
+  const [paneTab, setPaneTab] = useState("transcript"); // transcript | captions | post | agent
   const [agentFlowEnabled, setAgentFlowEnabled] = useState(true);
   const [inDraft, setInDraft] = useState("");
   const [outDraft, setOutDraft] = useState("");
   const [titleDraft, setTitleDraft] = useState("");
   const [editingTitle, setEditingTitle] = useState(false);
-  const [podbriefDraft, setPodbriefDraft] = useState("");
+  const [summaryPromptDraft, setSummaryPromptDraft] = useState(() =>
+    loadSharedPrompt(LS_SUMMARY_PROMPT, DEFAULT_SUMMARY_PROMPT)
+  );
+  const [clipPromptDraft, setClipPromptDraft] = useState(() =>
+    loadSharedPrompt(LS_CLIP_PROMPT, DEFAULT_CLIP_PROMPT)
+  );
   const [summaryUrlDraft, setSummaryUrlDraft] = useState("");
-  const [postOpen, setPostOpen] = useState(false);
   const [importNotice, setImportNotice] = useState(null);
   const [retryBusy, setRetryBusy] = useState(false);
   const [copyFlash, setCopyFlash] = useState(null);
@@ -268,7 +394,7 @@ export default function App() {
       const s = await api.getSource(id);
       setSource(s);
       if (!editingTitle) setTitleDraft(s.title || "");
-      setPodbriefDraft(s.podbrief_text || "");
+      // Agent prompts are app-wide (localStorage); do not reset per source
       setSummaryUrlDraft(s.summary_post_url || "");
       if (s.status === "ready" && s.transcript_json) {
         try {
@@ -301,11 +427,20 @@ export default function App() {
       .catch(() => {});
   }, []);
 
+  // Retire turbo / large-v3 from the UI allowlist
+  useEffect(() => {
+    if (!WHISPER_MODELS.some((m) => m.id === model)) {
+      setModel("small");
+    }
+  }, [model]);
+
   useEffect(() => {
     selectedIdRef.current = selectedId;
     setExportMsg(null);
     setExportPercent(null);
     setExportPath(null);
+    setExportStatusOpen(false);
+    setExportFailed(false);
     setCaptionsMsg(null);
     setAgentMsg(null);
     setAgentMsgStep(null);
@@ -341,20 +476,27 @@ export default function App() {
     setOutDraft(formatTs(activeClip.t_out));
   }, [activeClip?.id, activeClip?.t_in, activeClip?.t_out]);
 
-  // Auto-expand post package when clip has post content
-  useEffect(() => {
-    if (!activeClip) {
-      setPostOpen(false);
-      return;
-    }
-    if (activeClip.post_text || activeClip.why || activeClip.from_plan) {
-      setPostOpen(true);
-    }
-  }, [activeClip?.id, activeClip?.post_text, activeClip?.why, activeClip?.from_plan]);
-
   useEffect(() => {
     if (editingTitle && titleInputRef.current) titleInputRef.current.focus();
   }, [editingTitle]);
+
+  // Append @handles as last line of post text when switching clips (if missing)
+  useEffect(() => {
+    if (!activeClip) return;
+    const tags = activeClip.tags || [];
+    if (!tags.length) return;
+    const next = postWithHandles(activeClip.post_text || "", tags);
+    if (next === (activeClip.post_text || "")) return;
+    setSource((prev) => {
+      if (!prev || !activeClipId) return prev;
+      return {
+        ...prev,
+        clips: (prev.clips || []).map((c) =>
+          c.id === activeClipId ? { ...c, post_text: next } : c
+        ),
+      };
+    });
+  }, [activeClipId]);
 
   const sortedSources = useMemo(() => {
     return [...sources].sort((a, b) => {
@@ -509,11 +651,25 @@ export default function App() {
     }
   }
 
-  async function savePodbrief() {
+  async function saveSummaryPrompt() {
+    saveSharedPrompt(LS_SUMMARY_PROMPT, summaryPromptDraft);
     if (!source) return;
     try {
       const updated = await api.updateSource(source.id, {
-        podbrief_text: podbriefDraft,
+        summary_prompt_text: summaryPromptDraft,
+      });
+      setSource((prev) => ({ ...prev, ...updated }));
+    } catch (err) {
+      setError(String(err.message || err));
+    }
+  }
+
+  async function saveClipPrompt() {
+    saveSharedPrompt(LS_CLIP_PROMPT, clipPromptDraft);
+    if (!source) return;
+    try {
+      const updated = await api.updateSource(source.id, {
+        clip_prompt_text: clipPromptDraft,
       });
       setSource((prev) => ({ ...prev, ...updated }));
     } catch (err) {
@@ -541,8 +697,8 @@ export default function App() {
     setAgentMsgStep("summary");
     setAgentMsg("Exporting summary package…");
     try {
-      if (podbriefDraft !== (source.podbrief_text || "")) {
-        await savePodbrief();
+      if (summaryPromptDraft !== (source.summary_prompt_text || "")) {
+        await saveSummaryPrompt();
       }
       const result = await api.exportSummaryPackage(source.id);
       setAgentMsg(
@@ -571,6 +727,9 @@ export default function App() {
     try {
       if (summaryUrlDraft.trim() !== (source.summary_post_url || "")) {
         await saveSummaryUrl();
+      }
+      if (clipPromptDraft !== (source.clip_prompt_text || "")) {
+        await saveClipPrompt();
       }
       if (!summaryUrlDraft.trim() && !(source.summary_post_url || "").trim()) {
         setError("Paste the summary post URL before exporting the clip package");
@@ -641,7 +800,7 @@ export default function App() {
         const tin = result.clips[0].t_in;
         if (typeof tin === "number") seekTo(tin);
       }
-      setMainTab("editor");
+      setPaneTab("transcript");
     } catch (err) {
       setError(String(err.message || err));
       setAgentMsg(null);
@@ -676,7 +835,7 @@ export default function App() {
           c.id === updated.id ? { ...c, ...updated } : c
         ),
       }));
-      setRightPane("captions");
+      setPaneTab("captions");
       setCaptionsMsg(
         `Captions ready — ${updated.captions?.length || 0} line(s) (times relative to clip start)`
       );
@@ -749,6 +908,8 @@ export default function App() {
     setExportBusy(true);
     setExportPercent(0);
     setExportPath(null);
+    setExportFailed(false);
+    setExportStatusOpen(true);
     setExportMsg(label || "Starting export…");
     try {
       const started = await api.exportClips(ownerId, clipIds);
@@ -769,29 +930,36 @@ export default function App() {
       const n = job.exported?.length || 0;
       if (job.status === "error" && !n) {
         if (onOwner()) {
-          setError((job.errors || [job.message || "export failed"]).join("; "));
-          setExportMsg(null);
+          setExportFailed(true);
+          setExportStatusOpen(true);
+          setExportMsg(
+            (job.errors || [job.message || "export failed"]).join("; ")
+          );
           setExportPercent(null);
           setExportPath(null);
         }
       } else if (onOwner()) {
+        setExportFailed(false);
+        setExportStatusOpen(true);
         setExportPercent(100);
         const out = job.out_dir || null;
         setExportPath(out);
+        const failNote = job.errors?.length
+          ? ` (${job.errors.length} failed)`
+          : "";
         setExportMsg(
-          `✓ ${job.message || `Exported ${n} clip(s)`}` +
-            (out ? `\n${out}` : "") +
-            (job.errors?.length
-              ? `\n(${job.errors.length} failed: ${job.errors.join("; ")})`
-              : "")
+          n === 1
+            ? `Cut and encoded.${failNote}`
+            : `Cut and encoded ${n} clips.${failNote}`
         );
       }
       if (onOwner()) await loadSource(ownerId);
       await refreshList();
     } catch (err) {
       if (onOwner()) {
-        setError(String(err.message || err));
-        setExportMsg(null);
+        setExportFailed(true);
+        setExportStatusOpen(true);
+        setExportMsg(String(err.message || err));
         setExportPercent(null);
         setExportPath(null);
       }
@@ -948,7 +1116,7 @@ export default function App() {
   const markKeysOk =
     !!activeClip &&
     source?.status === "ready" &&
-    (!agentFlowEnabled || mainTab === "editor");
+    paneTab !== "agent"; // I/O still work from post/captions while craft is visible
 
   useEffect(() => {
     if (!markKeysOk) return undefined;
@@ -1005,7 +1173,6 @@ export default function App() {
     );
   }, [activeClip, clipCaptions, clipRelTime, inRange]);
 
-  const briefDone = !!(podbriefDraft.trim() || source?.podbrief_text);
   const summaryUrlDone = !!(summaryUrlDraft.trim() || source?.summary_post_url);
   const planDone = !!(source?.clips || []).some((c) => c.from_plan);
   const canRetryTranscribe =
@@ -1025,40 +1192,79 @@ export default function App() {
     (activeClip?.tags || []).length
   );
 
+  const agentStepsDone =
+    (summaryUrlDone || planDone ? 1 : 0) +
+    (summaryUrlDone ? 1 : 0) +
+    (planDone ? 1 : 0);
+  const clipCount = (source?.clips || []).length;
+  const showWhyOnCards = clipCount < 10;
+
+  function goHome() {
+    setSelectedId(null);
+    setSource(null);
+    setTranscript(null);
+    setActiveClipId(null);
+    setEditingTitle(false);
+    setPaneTab("transcript");
+    setError(null);
+    setImportNotice(null);
+  }
+
+  const exportPaths = useMemo(() => {
+    const paths = [];
+    if (activeClip?.export_path) paths.push(shortExportPath(activeClip.export_path));
+    if (activeClip?.captions_srt) paths.push(shortExportPath(activeClip.captions_srt));
+    if (
+      exportPath &&
+      !paths.some(
+        (p) =>
+          p.includes(shortExportPath(exportPath)) ||
+          shortExportPath(exportPath).includes(p)
+      )
+    ) {
+      paths.push(shortExportPath(exportPath));
+    }
+    return paths;
+  }, [activeClip?.export_path, activeClip?.captions_srt, exportPath]);
+
   return (
     <div className="app">
       <header className="top">
-        <div className="brand">
-          <BrandMark />
+        <button
+          type="button"
+          className="brand"
+          onClick={goHome}
+          title="Back to welcome"
+        >
+          <div className="brand-mark" aria-hidden>
+            <CutMarkSvg />
+          </div>
           <div className="brand__text">
             <span className="brand__name">clipgenerator</span>
-            <span className="brand__tag">local clip studio</span>
+            <span className="brand__tag">a local clip desk</span>
           </div>
-        </div>
+        </button>
         <form className="ingest" onSubmit={onIngest}>
           <div className="ingest__row">
             <input
               className="input"
               type="url"
-              placeholder="Paste YouTube or X URL…"
               value={url}
               onChange={(e) => setUrl(e.target.value)}
+              placeholder="Paste a YouTube or X link"
               disabled={busy}
+              autoFocus={!source}
             />
             <select
               className="select"
               value={model}
               onChange={(e) => setModel(e.target.value)}
               disabled={busy}
-              aria-label="Whisper model, least to most powerful"
-              title={
-                WHISPER_MODELS.find((m) => m.id === model)?.guide ||
-                "Whisper model"
-              }
+              title={WHISPER_MODELS.find((m) => m.id === model)?.guide || ""}
             >
               {WHISPER_MODELS.map((m) => (
-                <option key={m.id} value={m.id} title={m.guide}>
-                  {m.label}
+                <option key={m.id} value={m.id}>
+                  {m.id}
                 </option>
               ))}
             </select>
@@ -1066,14 +1272,10 @@ export default function App() {
               type="submit"
               className="btn btn--primary"
               disabled={busy}
-              title="Download and transcribe on-device"
             >
-              {busy ? "Queuing…" : "Add source"}
+              {busy ? "Adding…" : "Add source"}
             </button>
           </div>
-          <p className="ingest__hint" aria-live="polite">
-            {WHISPER_MODELS.find((m) => m.id === model)?.guide}
-          </p>
         </form>
       </header>
 
@@ -1086,78 +1288,212 @@ export default function App() {
 
       <div className="layout">
         <aside className="sidebar">
-          <div className="section-label">
-            <h2 className="section-label__title">Sources</h2>
-            <span className="section-label__count">{sources.length}</span>
-          </div>
-          <ul className="sidebar__list">
-            {sortedSources.map((s) => (
-              <li
-                key={s.id}
-                className={`list-item ${s.id === selectedId ? "list-item--active" : ""}`}
-                onClick={() => {
-                  setEditingTitle(false);
-                  setSelectedId(s.id);
-                }}
-              >
-                <div className="list-item__row">
-                  <div className="list-item__title list-item__title--clamp">
-                    {s.title || s.id}
+          <div className="sidebar__sources">
+            <div className="section-label">
+              <h2 className="section-label__title">Sources</h2>
+              <span className="section-label__count">{sources.length}</span>
+            </div>
+            <ul className="sidebar__list">
+              {sortedSources.map((s) => (
+                <li
+                  key={s.id}
+                  className={`list-item ${s.id === selectedId ? "list-item--active" : ""}`}
+                  onClick={() => {
+                    setEditingTitle(false);
+                    setSelectedId(s.id);
+                  }}
+                >
+                  <div className="list-item__row">
+                    <div className="list-item__title list-item__title--clamp">
+                      {s.title || s.id}
+                    </div>
                   </div>
-                  <button
-                    type="button"
-                    className="btn btn--icon btn--danger"
-                    title="Remove from sidebar"
-                    onClick={(e) => {
-                      e.stopPropagation();
-                      deleteSource(s.id, s.title);
-                    }}
-                  >
-                    ×
-                  </button>
-                </div>
-                <div className="list-item__meta">
-                  <span className={pillStatus(s.status)}>{s.status}</span>
-                  {s.duration != null && (
-                    <span className="text-mono text-meta">{formatTs(s.duration)}</span>
+                  <div className="list-item__meta">
+                    {s.duration != null && (
+                      <span className="text-mono">{formatTs(s.duration)}</span>
+                    )}
+                    {s.duration != null && s.model && <span className="sep">·</span>}
+                    {s.model && <span>{s.model}</span>}
+                    {(s.duration != null || s.model) && <span className="sep">·</span>}
+                    <span>
+                      {(s.clips || []).length} clip
+                      {(s.clips || []).length === 1 ? "" : "s"}
+                    </span>
+                    <span className="sep">·</span>
+                    <span className={statusWordClass(s.status)}>
+                      {s.status === "transcribing" && s.job?.percent != null
+                        ? `transcribing ${s.job.percent}%`
+                        : s.status}
+                    </span>
+                    <button
+                      type="button"
+                      className="btn btn--icon btn--danger list-item__remove"
+                      title="Remove from sidebar"
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        deleteSource(s.id, s.title);
+                      }}
+                    >
+                      ×
+                    </button>
+                  </div>
+                </li>
+              ))}
+              {!sources.length && (
+                <li className="sidebar__empty">
+                  No sources yet.
+                  <br />
+                  Paste a link above.
+                </li>
+              )}
+            </ul>
+          </div>
+
+          <div className="sidebar__divider" />
+
+          <div className="sidebar__clips">
+            <div className="section-label">
+              <h2 className="section-label__title">
+                Clips{!source ? " —" : ""}
+              </h2>
+            </div>
+            {source?.status === "ready" ? (
+              <>
+                <ul className="sidebar__clips-list">
+                  {(source.clips || []).map((c) => {
+                    const st =
+                      c.from_plan && c.status === "draft" ? "plan" : c.status;
+                    return (
+                      <li key={c.id}>
+                        <div
+                          className={`clip-card ${
+                            c.id === activeClipId ? "clip-card--active" : ""
+                          }`}
+                          onClick={() => {
+                            setActiveClipId(c.id);
+                            seekTo(c.t_in);
+                          }}
+                          role="button"
+                          tabIndex={0}
+                          onKeyDown={(e) => {
+                            if (e.key === "Enter" || e.key === " ") {
+                              e.preventDefault();
+                              setActiveClipId(c.id);
+                              seekTo(c.t_in);
+                            }
+                          }}
+                        >
+                          <div className="clip-card__top">
+                            <span className="clip-card__title">{c.title}</span>
+                            <span className={statusWordClass(st)}>{st}</span>
+                          </div>
+                          <div className="clip-card__range">
+                            {formatTs(c.t_in)} – {formatTs(c.t_out)} ·{" "}
+                            {Math.max(0, (c.t_out || 0) - (c.t_in || 0)).toFixed(
+                              1
+                            )}
+                            s
+                          </div>
+                          {showWhyOnCards && c.why && (
+                            <p className="clip-card__why">why · {c.why}</p>
+                          )}
+                          <button
+                            type="button"
+                            className="btn btn--icon btn--danger"
+                            title="Delete clip"
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              removeClip(c.id);
+                            }}
+                          >
+                            ×
+                          </button>
+                        </div>
+                      </li>
+                    );
+                  })}
+                  {!(source.clips || []).length && (
+                    <li className="sidebar__empty sidebar__empty--dim">
+                      No clips yet — mark a range or import a plan.
+                    </li>
                   )}
-                  <span className="text-meta">
-                    {(s.clips || []).length} clip{(s.clips || []).length === 1 ? "" : "s"}
-                  </span>
-                </div>
-              </li>
-            ))}
-            {!sources.length && (
-              <li className="sidebar__empty">No sources yet — paste a URL above.</li>
+                </ul>
+                <button
+                  type="button"
+                  className="btn sidebar__add-clip"
+                  onClick={addClip}
+                  disabled={exportBusy}
+                >
+                  Add clip
+                </button>
+              </>
+            ) : (
+              <p className="sidebar__empty sidebar__empty--dim">
+                {source
+                  ? "Clips appear once the transcript is ready."
+                  : "Select a source to see clips."}
+              </p>
             )}
-          </ul>
+          </div>
+
+          <div className="sidebar__foot">
+            {source?.folder || source?.video_path ? (
+              <button
+                type="button"
+                className="sidebar__foot-action"
+                title={source.folder || source.video_path}
+                onClick={() =>
+                  api
+                    .revealPath(source.folder || source.video_path)
+                    .catch((e) => setError(String(e.message || e)))
+                }
+              >
+                Open in Finder
+              </button>
+            ) : (
+              <span className="sidebar__foot-muted">library · data/library.json</span>
+            )}
+          </div>
         </aside>
 
-        <main className="main">
+        <section className={`center-col ${!source ? "center-col--empty" : ""}`}>
           {!source && (
-            <div className="empty-main">
-              <div className="empty-main__icon">
-                <CutMarkSvg />
+            <div className="empty-layout">
+              <div className="paper empty-paper">
+                <p className="empty-paper__label">Welcome</p>
+                <h1 className="empty-paper__headline">
+                  Paste a link and it becomes a transcript you can cut clips from.
+                </h1>
+                <p className="empty-paper__body">
+                  Download and transcription both happen on this machine — no
+                  account, no upload, no speech bill. Expect a few minutes on an
+                  hour-long show, then the episode reads like a document.
+                </p>
+                <ol className="empty-paper__steps">
+                  <li>
+                    <strong>01</strong>
+                    <span>
+                      <strong>Ingest</strong> — yt-dlp downloads the video, Whisper
+                      transcribes it locally.
+                    </span>
+                  </li>
+                  <li>
+                    <strong>02</strong>
+                    <span>
+                      <strong>Mark</strong> — press <strong>I</strong> /{" "}
+                      <strong>O</strong> at the playhead, or type start/end times.
+                      Many clips per source.
+                    </span>
+                  </li>
+                  <li>
+                    <strong>03</strong>
+                    <span>
+                      <strong>Caption, write the post, export</strong> — H.264 + AAC
+                      into clips/, with an SRT beside it.
+                    </span>
+                  </li>
+                </ol>
               </div>
-              <h1 className="text-display">Cut clips that land</h1>
-              <p className="text-meta">
-                Paste a YouTube or X URL above. On-device transcription, transcript-tight
-                marks, captions, and clean H.264 exports — all local.
-              </p>
-              <ul className="empty-main__steps">
-                <li>
-                  <span className="empty-main__step-num">1</span>
-                  Ingest a source — download + Whisper on your machine
-                </li>
-                <li>
-                  <span className="empty-main__step-num">2</span>
-                  Mark in/out from playhead, keys, or transcript
-                </li>
-                <li>
-                  <span className="empty-main__step-num">3</span>
-                  Caption, write the post, export to clips/
-                </li>
-              </ul>
             </div>
           )}
 
@@ -1190,61 +1526,94 @@ export default function App() {
                       }}
                     >
                       {source.title}
-                      <span className="edit-hint">edit</span>
+                      <span className="edit-hint">rename</span>
                     </h1>
                   )}
-                  <p className="text-meta source-head__sub">
-                    {source.duration != null && <span>{formatTs(source.duration)}</span>}
-                    {source.model && <span>· {source.model}</span>}
-                    <span className={pillStatus(source.status)}>{source.status}</span>
-                    {source.job?.message && source.status !== "ready" && (
-                      <span>· {source.job.message}</span>
+                  <p className="source-head__sub">
+                    {source.duration != null && (
+                      <span>{formatTs(source.duration)}</span>
                     )}
+                    {source.model && (
+                      <>
+                        <span className="sep">·</span>
+                        <span>{source.model}</span>
+                      </>
+                    )}
+                    <span className="sep">·</span>
+                    <span className={statusWordClass(source.status)}>
+                      {source.status}
+                    </span>
+                    <span className="sep">·</span>
+                    <button
+                      type="button"
+                      className="linkish"
+                      onClick={() => {
+                        setTitleDraft(source.title || "");
+                        setEditingTitle(true);
+                      }}
+                    >
+                      rename
+                    </button>
+                    <span className="sep">·</span>
+                    <button
+                      type="button"
+                      className="linkish"
+                      onClick={() => deleteSource(source.id, source.title)}
+                    >
+                      remove
+                    </button>
                   </p>
-                  {source.error && <p className="error-text">{source.error}</p>}
-                </div>
-                <div className="source-head__actions">
-                  <button
-                    type="button"
-                    className="btn btn--ghost btn--sm"
-                    onClick={() => {
-                      setTitleDraft(source.title || "");
-                      setEditingTitle(true);
-                    }}
-                  >
-                    Rename
-                  </button>
-                  <button
-                    type="button"
-                    className="btn btn--ghost btn--sm btn--danger"
-                    onClick={() => deleteSource(source.id, source.title)}
-                  >
-                    Remove
-                  </button>
+                  {source.error && source.status !== "error" && (
+                    <p className="error-text">{source.error}</p>
+                  )}
                 </div>
               </div>
 
               {isShortSource && source.status === "ready" && (
                 <div className="source-alert source-alert--warning" role="status">
-                  Short source ({formatTs(source.duration)}). Some X posts are promo clips —
-                  full episodes may live on YouTube or a podcast feed.
+                  <p className="source-alert__title">
+                    This one is {formatTs(source.duration)} long — an X promo, not
+                    the episode.
+                  </p>
+                  <p className="source-alert__detail">
+                    Full episodes often live on YouTube or the podcast feed. Duration
+                    in the UI is truth for what downloaded.
+                  </p>
                 </div>
               )}
 
               {source.status === "error" && (
                 <div className="source-alert source-alert--error">
-                  <span className="banner__text">
+                  <p className="source-alert__title">
                     {source.error || "Something failed on this source."}
-                  </span>
+                  </p>
                   {canRetryTranscribe && (
-                    <button
-                      type="button"
-                      className="btn btn--sm"
-                      onClick={retryTranscribe}
-                      disabled={retryBusy}
-                    >
-                      {retryBusy ? "Retrying…" : "Retry transcribe"}
-                    </button>
+                    <div className="source-alert__actions">
+                      <button
+                        type="button"
+                        className="btn btn--primary btn--sm"
+                        onClick={retryTranscribe}
+                        disabled={retryBusy}
+                      >
+                        {retryBusy ? "Retrying…" : "Retry transcribe"}
+                      </button>
+                      <select
+                        className="select"
+                        value={model}
+                        onChange={(e) => setModel(e.target.value)}
+                        disabled={retryBusy}
+                        style={{ width: "auto" }}
+                      >
+                        {WHISPER_MODELS.map((m) => (
+                          <option key={m.id} value={m.id}>
+                            {m.id}
+                          </option>
+                        ))}
+                      </select>
+                      <span className="text-meta">
+                        the video on disk is reused — nothing re-downloads
+                      </span>
+                    </div>
                   )}
                 </div>
               )}
@@ -1253,30 +1622,7 @@ export default function App() {
                 <PipelineProgress source={source} />
               )}
 
-              {source.status === "ready" && agentFlowEnabled && (
-                <div className="main-tabs" role="tablist" aria-label="Main views">
-                  <button
-                    type="button"
-                    role="tab"
-                    aria-selected={mainTab === "editor"}
-                    className={`main-tab ${mainTab === "editor" ? "main-tab--active" : ""}`}
-                    onClick={() => setMainTab("editor")}
-                  >
-                    Editor
-                  </button>
-                  <button
-                    type="button"
-                    role="tab"
-                    aria-selected={mainTab === "agent"}
-                    className={`main-tab ${mainTab === "agent" ? "main-tab--active" : ""}`}
-                    onClick={() => setMainTab("agent")}
-                  >
-                    Agent flow
-                  </button>
-                </div>
-              )}
-
-              {importNotice && mainTab === "editor" && (
+              {importNotice && paneTab !== "agent" && (
                 <div
                   className="import-notice"
                   role="status"
@@ -1287,887 +1633,1069 @@ export default function App() {
                 </div>
               )}
 
-              {source.status === "ready" &&
-                agentFlowEnabled &&
-                mainTab === "agent" && (
-                <div className="agent-flow">
-                  <div className="agent-flow__toolbar">
-                    <div className="agent-flow__context">
-                      <span className="agent-flow__title">
-                        {source.title}
-                      </span>
-                      {source.duration != null && (
-                        <span className="text-mono">{formatTs(source.duration)}</span>
-                      )}
-                      <span className="pill pill--ready">ready</span>
-                    </div>
+              {source.status === "ready" && (
+                <>
+                  <div className="pane-tabs" role="tablist" aria-label="Center panes">
                     <button
                       type="button"
-                      className="btn btn--ghost btn--sm"
-                      onClick={() => setMainTab("editor")}
+                      role="tab"
+                      aria-selected={paneTab === "transcript"}
+                      className={`pane-tab ${
+                        paneTab === "transcript" ? "pane-tab--active" : ""
+                      }`}
+                      onClick={() => setPaneTab("transcript")}
                     >
-                      ← Editor
+                      Transcript
                     </button>
-                  </div>
-
-                  <p className="text-meta agent-flow__intro">
-                    Hand off to an external LLM, then import clips. This app owns media and
-                    the timeline — editorial judgment stays in your private prompt pack.
-                  </p>
-
-                  <div className="agent-flow__status" aria-label="Pipeline progress">
-                    <span className={`agent-chip ${briefDone ? "agent-chip--done" : ""}`}>
-                      Brief
-                    </span>
-                    <span className="agent-chip__sep" aria-hidden />
-                    <span
-                      className={`agent-chip ${summaryUrlDone ? "agent-chip--done" : ""}`}
+                    <button
+                      type="button"
+                      role="tab"
+                      aria-selected={paneTab === "captions"}
+                      className={`pane-tab ${
+                        paneTab === "captions" ? "pane-tab--active" : ""
+                      }`}
+                      onClick={() => setPaneTab("captions")}
                     >
-                      Summary URL
-                    </span>
-                    <span className="agent-chip__sep" aria-hidden />
-                    <span className={`agent-chip ${planDone ? "agent-chip--done" : ""}`}>
-                      Plan imported
-                    </span>
+                      Captions
+                    </button>
+                    <button
+                      type="button"
+                      role="tab"
+                      aria-selected={paneTab === "post"}
+                      className={`pane-tab ${
+                        paneTab === "post" ? "pane-tab--active" : ""
+                      }`}
+                      onClick={() => setPaneTab("post")}
+                    >
+                      Post
+                    </button>
+                    {agentFlowEnabled && (
+                      <button
+                        type="button"
+                        role="tab"
+                        aria-selected={paneTab === "agent"}
+                        className={`pane-tab pane-tab--agent ${
+                          paneTab === "agent" ? "pane-tab--active" : ""
+                        }`}
+                        onClick={() => setPaneTab("agent")}
+                      >
+                        Agent handoff
+                      </button>
+                    )}
                   </div>
 
-                  {/* Step 1 — Summary */}
-                  <section className="agent-step panel">
-                    <div className="agent-step__head">
-                      <span
-                        className={`agent-step__num ${
-                          briefDone || agentMsgStep === "summary" ? "agent-step__num--done" : ""
-                        }`}
-                      >
-                        1
-                      </span>
-                      <div>
-                        <h2 className="agent-step__title">Summary package</h2>
-                        <p className="text-meta">
-                          Optional brief + transcript → export → Summary LLM → post on X
+                  <div className="center-scroll">
+                    {paneTab === "agent" && agentFlowEnabled ? (
+                      <div className="paper paper--agent">
+                        <div className="paper__body agent-flow">
+                        <p className="agent-flow__intro">
+                          clipgenerator owns download, local transcription, clip
+                          marks, captions, and export. It does <strong>not</strong>{" "}
+                          call an LLM. Recommended workflow: export a file package
+                          from here → paste or drop those files into your own
+                          text-based agent (Grok, ChatGPT, Claude, etc.) with your
+                          editorial instructions → bring a clip plan JSON back into
+                          step 3. Judgment and model choice stay outside this app.
                         </p>
-                      </div>
-                    </div>
-                    <label className="field">
-                      <span className="field__label">
-                        High-level brief{" "}
-                        <span className="text-meta">(optional themes / outline)</span>
-                      </span>
-                      <textarea
-                        className="input agent-brief-panel__textarea"
-                        rows={5}
-                        value={podbriefDraft}
-                        onChange={(e) => setPodbriefDraft(e.target.value)}
-                        onBlur={savePodbrief}
-                        placeholder="Paste a high-level brief or notes for the summary agent…"
-                      />
-                    </label>
-                    <div className="clip-bar__row">
-                      <button
-                        type="button"
-                        className="btn btn--primary"
-                        onClick={exportSummaryPackage}
-                        disabled={agentBusy}
-                        title="Write agent-export/summary/"
-                      >
-                        {agentBusy && agentMsgStep === "summary"
-                          ? "Exporting…"
-                          : "Export for Summary agent"}
-                      </button>
-                    </div>
-                    {agentMsgStep === "summary" && agentMsg && (
-                      <JobStatus
-                        busy={agentBusy}
-                        message={agentMsg}
-                        onDismiss={() => {
-                          setAgentMsg(null);
-                          setAgentMsgStep(null);
-                        }}
-                      />
-                    )}
-                  </section>
 
-                  {/* Step 2 — Clips */}
-                  <section
-                    className={`agent-step panel ${
-                      !summaryUrlDraft.trim() && !source.summary_post_url
-                        ? "agent-step--locked"
-                        : ""
-                    }`}
-                  >
-                    <div className="agent-step__head">
-                      <span
-                        className={`agent-step__num ${
-                          summaryUrlDone ? "agent-step__num--done" : ""
-                        }`}
-                      >
-                        2
-                      </span>
-                      <div>
-                        <h2 className="agent-step__title">Clip package</h2>
-                        <p className="text-meta">
-                          After the summary is live, paste its X URL — clips quote that post
-                        </p>
-                      </div>
-                    </div>
-                    <label className="field">
-                      <span className="field__label">Summary post URL</span>
-                      <input
-                        className="input"
-                        type="url"
-                        value={summaryUrlDraft}
-                        onChange={(e) => setSummaryUrlDraft(e.target.value)}
-                        onBlur={saveSummaryUrl}
-                        placeholder="https://x.com/…/status/…"
-                      />
-                    </label>
-                    <div className="clip-bar__row">
-                      <button
-                        type="button"
-                        className="btn btn--primary"
-                        onClick={exportClipPackage}
-                        disabled={agentBusy || !summaryUrlDraft.trim()}
-                        title={
-                          !summaryUrlDraft.trim()
-                            ? "Paste summary post URL first"
-                            : "Write agent-export/clip/"
-                        }
-                      >
-                        {agentBusy && agentMsgStep === "clip"
-                          ? "Exporting…"
-                          : "Export for Clip agent"}
-                      </button>
-                    </div>
-                    {agentMsgStep === "clip" && agentMsg && (
-                      <JobStatus
-                        busy={agentBusy}
-                        message={agentMsg}
-                        onDismiss={() => {
-                          setAgentMsg(null);
-                          setAgentMsgStep(null);
-                        }}
-                      />
-                    )}
-                  </section>
-
-                  {/* Step 3 — Import */}
-                  <section className="agent-step panel">
-                    <div className="agent-step__head">
-                      <span
-                        className={`agent-step__num ${planDone ? "agent-step__num--done" : ""}`}
-                      >
-                        3
-                      </span>
-                      <div>
-                        <h2 className="agent-step__title">Import clip plan</h2>
-                        <p className="text-meta">
-                          Paste export JSON (or a fenced json block). Accepts seconds or M:SS
-                          labels — then refine in Editor.
-                        </p>
-                      </div>
-                    </div>
-                    <label className="field">
-                      <span className="field__label">Clip plan JSON</span>
-                      <textarea
-                        className="input agent-brief-panel__textarea agent-brief-panel__textarea--code"
-                        rows={10}
-                        value={planImportText}
-                        onChange={(e) => setPlanImportText(e.target.value)}
-                        placeholder={
-                          '{\n  "version": 1,\n  "clips": [\n    {\n      "title": "…",\n      "t_in": 2628,\n      "t_out": 2785,\n      "post_text": "lowercase x post…",\n      "tags": ["@host"]\n    }\n  ]\n}'
-                        }
-                        spellCheck={false}
-                      />
-                    </label>
-                    <div className="clip-bar__row">
-                      <button
-                        type="button"
-                        className="btn btn--primary"
-                        onClick={importClipPlan}
-                        disabled={planImportBusy || !planImportText.trim()}
-                      >
-                        {planImportBusy ? "Importing…" : "Import clips"}
-                      </button>
-                      <button
-                        type="button"
-                        className="btn"
-                        onClick={() => planFileRef.current?.click()}
-                        disabled={planImportBusy}
-                      >
-                        Choose file…
-                      </button>
-                      <button
-                        type="button"
-                        className="btn btn--ghost"
-                        onClick={() => setMainTab("editor")}
-                      >
-                        Open Editor
-                      </button>
-                    </div>
-                    {agentMsgStep === "import" && agentMsg && (
-                      <JobStatus busy={planImportBusy} message={agentMsg} />
-                    )}
-                    <input
-                      ref={planFileRef}
-                      type="file"
-                      accept=".json,.md,.txt,application/json,text/plain"
-                      className="sr-only"
-                      onChange={onPlanFileChosen}
-                    />
-                  </section>
-                </div>
-              )}
-
-              {source.status === "ready" &&
-                mediaSrc &&
-                (!agentFlowEnabled || mainTab === "editor") && (
-                <div className="workspace">
-                  <div className="player-col">
-                    <div className="video-shell">
-                      <video
-                        ref={videoRef}
-                        src={mediaSrc}
-                        controls
-                        onTimeUpdate={(e) => setCurrentTime(e.target.currentTime)}
-                      />
-                      <div
-                        className={`video-shell__badge ${inRange ? "video-shell__badge--in" : ""}`}
-                      >
-                        {formatTs(currentTime)}
-                        {inRange ? " · in clip" : ""}
-                      </div>
-                      {activeCaption?.text && (
-                        <div className="caption-overlay" aria-live="polite">
-                          <span className="caption-overlay__text">
-                            {activeCaption.text}
-                          </span>
-                        </div>
-                      )}
-                    </div>
-
-                    <div className="panel clip-bar">
-                      {/* MARK zone — NLE-style */}
-                      <div className="craft-zone">
-                        <div className="craft-zone__head">
-                          <h3 className="craft-zone__title">Mark</h3>
-                          <p className="craft-zone__hint">
-                            <span className="kbd">I</span> /{" "}
-                            <span className="kbd">O</span> ·{" "}
-                            <span className="kbd">⌥</span> /{" "}
-                            <span className="kbd">⇧</span> transcript
+                        <section className="agent-step">
+                          <div className="agent-step__head">
+                            <div>
+                              <h2 className="agent-step__title">
+                                1 · Summary post generation
+                              </h2>
+                              <p className="agent-step__meta">
+                                agent-export/summary/ · reference + prompt + transcript
+                              </p>
+                            </div>
+                          </div>
+                          <p className="agent-flow__step-copy">
+                            After the video is transcribed, export a folder of files
+                            you can hand to an external agent that drafts a{" "}
+                            <strong>summary post</strong>. Package includes{" "}
+                            <code>01-reference.md</code> (title, source URL),{" "}
+                            <code>02-prompt.md</code> (editable below), and{" "}
+                            <code>03-transcript.md</code> (full timestamped transcript).
                           </p>
-                        </div>
-
-                        <label className="field">
-                          <span className="field__label">Clip title</span>
-                          <input
-                            className="input"
-                            value={activeClip?.title || ""}
-                            onChange={(e) =>
-                              setSource((prev) => ({
-                                ...prev,
-                                clips: (prev.clips || []).map((c) =>
-                                  c.id === activeClipId
-                                    ? { ...c, title: e.target.value }
-                                    : c
-                                ),
-                              }))
-                            }
-                            onBlur={(e) => saveClipPatch({ title: e.target.value })}
-                            disabled={!activeClip}
-                          />
-                        </label>
-
-                        {activeClip && sourceDuration > 0 && (
-                          <div
-                            className="mark-timeline"
-                            title="Clip range on full source"
-                            aria-hidden
-                          >
-                            <div
-                              className="mark-timeline__range"
-                              style={{
-                                left: `${Math.min(100, Math.max(0, (activeClip.t_in / sourceDuration) * 100))}%`,
-                                width: `${Math.min(
-                                  100,
-                                  Math.max(
-                                    0.4,
-                                    ((activeClip.t_out - activeClip.t_in) / sourceDuration) *
-                                      100
+                          <label className="field">
+                            <span className="field__label">
+                              Summary agent prompt{" "}
+                              <span className="text-meta">
+                                (shared · written to 02-prompt.md)
+                              </span>
+                            </span>
+                            <textarea
+                              className="input agent-brief-panel__textarea"
+                              rows={10}
+                              value={summaryPromptDraft}
+                              onChange={(e) => setSummaryPromptDraft(e.target.value)}
+                              onBlur={saveSummaryPrompt}
+                            />
+                          </label>
+                          <div className="clip-bar__row">
+                            <button
+                              type="button"
+                              className="btn btn--primary"
+                              onClick={exportSummaryPackage}
+                              disabled={agentBusy}
+                            >
+                              {agentBusy && agentMsgStep === "summary"
+                                ? "Exporting…"
+                                : "Export summary package"}
+                            </button>
+                            <button
+                              type="button"
+                              className="btn btn--paper"
+                              onClick={() =>
+                                api
+                                  .revealPath(
+                                    (source.folder || "") + "/agent-export/summary"
                                   )
-                                )}%`,
-                              }}
-                            />
-                            <div
-                              className="mark-timeline__playhead"
-                              style={{
-                                left: `${Math.min(100, Math.max(0, (currentTime / sourceDuration) * 100))}%`,
-                              }}
-                            />
-                          </div>
-                        )}
-
-                        <div className="mark-rail">
-                          <div className="mark-rail__side mark-rail__side--start">
-                            <div className="mark-rail__fields">
-                              <label className="field">
-                                <span className="field__label">In</span>
-                                <input
-                                  className="input input--mono"
-                                  value={inDraft}
-                                  onChange={(e) => setInDraft(e.target.value)}
-                                  onBlur={() => applyTypedTimes({ seek: "in" })}
-                                  onKeyDown={(e) => {
-                                    if (e.key === "Enter") {
-                                      e.preventDefault();
-                                      applyTypedTimes({ seek: "in" });
-                                    }
-                                  }}
-                                  placeholder="0:00"
-                                  disabled={!activeClip}
-                                />
-                              </label>
-                              <button
-                                type="button"
-                                className="btn btn--in btn--mark"
-                                onClick={setInFromPlayhead}
-                                disabled={!activeClip}
-                                title="Set start at playhead (I)"
-                              >
-                                Set in · {formatTs(currentTime)}
-                              </button>
-                            </div>
-                          </div>
-
-                          <div className="mark-rail__center">
-                            <span className="mark-rail__duration">
-                              {activeClip
-                                ? `${Math.max(0, activeClip.t_out - activeClip.t_in).toFixed(1)}s`
-                                : "—"}
-                            </span>
-                            <span className="mark-rail__duration-label">duration</span>
-                            <button
-                              type="button"
-                              className="btn btn--sm btn--ghost"
-                              onClick={() => applyTypedTimes({ seek: "in" })}
-                              disabled={!activeClip}
-                              title="Apply typed times"
+                                  .catch(() => {})
+                              }
                             >
-                              Apply
+                              Open in Finder
                             </button>
                           </div>
-
-                          <div className="mark-rail__side mark-rail__side--end">
-                            <div className="mark-rail__fields mark-rail__fields--end">
-                              <label className="field">
-                                <span className="field__label">Out</span>
-                                <input
-                                  className="input input--mono"
-                                  value={outDraft}
-                                  onChange={(e) => setOutDraft(e.target.value)}
-                                  onBlur={() => applyTypedTimes({ seek: "out" })}
-                                  onKeyDown={(e) => {
-                                    if (e.key === "Enter") {
-                                      e.preventDefault();
-                                      applyTypedTimes({ seek: "out" });
-                                    }
-                                  }}
-                                  placeholder="0:30"
-                                  disabled={!activeClip}
-                                />
-                              </label>
-                              <button
-                                type="button"
-                                className="btn btn--primary btn--mark"
-                                onClick={setOutFromPlayhead}
-                                disabled={!activeClip}
-                                title="Set end at playhead (O)"
-                              >
-                                Set out · {formatTs(currentTime)}
-                              </button>
-                            </div>
-                          </div>
-                        </div>
-
-                        <div className="mark-actions">
-                          <button
-                            type="button"
-                            className="btn btn--ghost btn--sm"
-                            onClick={() => activeClip && seekTo(activeClip.t_in)}
-                            disabled={!activeClip}
-                          >
-                            Jump in
-                          </button>
-                          <button
-                            type="button"
-                            className="btn btn--ghost btn--sm"
-                            onClick={() =>
-                              activeClip &&
-                              seekTo(Math.max(0, (activeClip.t_out || 0) - 1))
-                            }
-                            disabled={!activeClip}
-                          >
-                            Jump out
-                          </button>
-                          {activeClip && (
-                            <span
-                              className={`range-chip ${inRange ? "range-chip--in" : ""}`}
-                            >
-                              {formatTs(activeClip.t_in)} → {formatTs(activeClip.t_out)}
-                            </span>
+                          {agentMsgStep === "summary" && agentMsg && (
+                            <JobStatus
+                              busy={agentBusy}
+                              message={agentMsg}
+                              onDismiss={() => {
+                                setAgentMsg(null);
+                                setAgentMsgStep(null);
+                              }}
+                            />
                           )}
-                        </div>
-                      </div>
+                        </section>
 
-                      {/* EXPORT zone */}
-                      <div className="craft-zone craft-zone--export">
-                        <div className="craft-zone__head">
-                          <h3 className="craft-zone__title">Export</h3>
-                        </div>
-                        <div className="export-bar">
-                          <button
-                            type="button"
-                            className="btn btn--primary"
-                            onClick={exportOne}
-                            disabled={!activeClip || exportBusy}
-                          >
-                            {exportBusy
-                              ? exportPercent != null
-                                ? `Exporting… ${exportPercent}%`
-                                : "Exporting…"
-                              : "Export clip"}
-                          </button>
-                          <button
-                            type="button"
-                            className="btn btn--ghost"
-                            onClick={exportAll}
-                            disabled={exportBusy}
-                          >
-                            Export all
-                          </button>
-                          <button
-                            type="button"
-                            className="btn btn--ghost"
-                            onClick={generateCaptions}
-                            disabled={!activeClip || captionsBusy}
-                            title="Slice source transcript into captions for this clip’s in/out range"
-                          >
-                            {captionsBusy
-                              ? "Generating…"
-                              : clipCaptions.length
-                                ? "Regenerate captions"
-                                : "Generate captions"}
-                          </button>
-                          {clipCaptions.length > 0 && (
-                            <button
-                              type="button"
-                              className="btn btn--ghost btn--sm"
-                              onClick={() => setRightPane("captions")}
-                            >
-                              Edit captions ({clipCaptions.length})
-                            </button>
-                          )}
-                        </div>
-                        <JobStatus
-                          busy={exportBusy}
-                          message={exportMsg}
-                          percent={exportPercent}
-                          onDismiss={() => {
-                            setExportMsg(null);
-                            setExportPath(null);
-                          }}
-                          onReveal={
-                            !exportBusy && (exportPath || activeClip?.export_path)
-                              ? revealExport
-                              : undefined
-                          }
-                        />
-                        {captionsMsg && !captionsBusy && (
-                          <JobStatus
-                            busy={false}
-                            message={captionsMsg}
-                            onDismiss={() => setCaptionsMsg(null)}
-                          />
-                        )}
-                        {captionsStale && (
-                          <p className="caption-stale">
-                            Clip range changed since captions were generated — regenerate
-                            for an accurate cut.
-                          </p>
-                        )}
-                        {activeClip?.status === "rendered" && activeClip?.export_path && (
-                          <p className="export-path">
-                            Saved · <code>{activeClip.export_path}</code>
-                            {activeClip.captions_srt && (
-                              <>
-                                {" "}
-                                · SRT · <code>{activeClip.captions_srt}</code>
-                              </>
-                            )}
-                          </p>
-                        )}
-                      </div>
-
-                      {/* POST zone (collapsible) */}
-                      {activeClip && (
-                        <div
-                          className={`craft-zone ${
-                            !postOpen ? "craft-zone--collapsed" : ""
+                        <section
+                          className={`agent-step ${
+                            !summaryUrlDraft.trim() && !source.summary_post_url
+                              ? "agent-step--locked"
+                              : ""
                           }`}
                         >
-                          <button
-                            type="button"
-                            className="craft-zone__toggle"
-                            aria-expanded={postOpen}
-                            onClick={() => setPostOpen((o) => !o)}
-                          >
-                            <span className="craft-zone__chevron">
-                              {postOpen ? "▾" : "▸"}
+                          <div className="agent-step__head">
+                            <div>
+                              <h2 className="agent-step__title">
+                                2 · Clip post generation
+                              </h2>
+                              <p className="agent-step__meta">
+                                agent-export/clip/ · summary URL + prompt + transcript
+                              </p>
+                            </div>
+                            <span
+                              className={`agent-chip ${
+                                summaryUrlDone ? "agent-chip--done" : ""
+                              }`}
+                            >
+                              {summaryUrlDone ? "URL set" : "needs URL"}
                             </span>
-                            Post package
-                            {hasPostContent ? "" : " · optional"}
-                            {postCharCount > 0 ? ` · ${postCharCount} chars` : ""}
-                          </button>
-                          {postOpen && (
+                          </div>
+                          <p className="agent-flow__step-copy">
+                            Once you have a summary post, paste its URL so the
+                            clipping agent has that context. Export writes{" "}
+                            <code>01-reference.md</code>, editable{" "}
+                            <code>02-prompt.md</code>, and{" "}
+                            <code>03-transcript.md</code>. The agent should return a{" "}
+                            <strong>JSON clip plan</strong> matching{" "}
+                            <a
+                              href="/CLIP_PLAN_SCHEMA.example.json"
+                              target="_blank"
+                              rel="noreferrer"
+                            >
+                              CLIP_PLAN_SCHEMA.example.json
+                            </a>
+                            — that JSON is what step 3 uses to create clips in
+                            clipgenerator.
+                          </p>
+                          <label className="field">
+                            <span className="field__label">Summary post URL</span>
+                            <input
+                              className="input"
+                              type="url"
+                              value={summaryUrlDraft}
+                              onChange={(e) => setSummaryUrlDraft(e.target.value)}
+                              onBlur={saveSummaryUrl}
+                              placeholder="https://x.com/…/status/…"
+                            />
+                          </label>
+                          <label className="field">
+                            <span className="field__label">
+                              Clip agent prompt{" "}
+                              <span className="text-meta">
+                                (shared · written to 02-prompt.md)
+                              </span>
+                            </span>
+                            <textarea
+                              className="input agent-brief-panel__textarea"
+                              rows={10}
+                              value={clipPromptDraft}
+                              onChange={(e) => setClipPromptDraft(e.target.value)}
+                              onBlur={saveClipPrompt}
+                            />
+                          </label>
+                          <div className="clip-bar__row">
+                            <button
+                              type="button"
+                              className="btn btn--primary"
+                              onClick={exportClipPackage}
+                              disabled={agentBusy || !summaryUrlDraft.trim()}
+                            >
+                              {agentBusy && agentMsgStep === "clip"
+                                ? "Exporting…"
+                                : "Export clip package"}
+                            </button>
+                            <button
+                              type="button"
+                              className="btn btn--paper"
+                              onClick={() =>
+                                api
+                                  .revealPath(
+                                    (source.folder || "") + "/agent-export/clip"
+                                  )
+                                  .catch(() => {})
+                              }
+                            >
+                              Open in Finder
+                            </button>
+                          </div>
+                          {agentMsgStep === "clip" && agentMsg && (
+                            <JobStatus
+                              busy={agentBusy}
+                              message={agentMsg}
+                              onDismiss={() => {
+                                setAgentMsg(null);
+                                setAgentMsgStep(null);
+                              }}
+                            />
+                          )}
+                        </section>
+
+                        <section className="agent-step agent-step--live">
+                          <div className="agent-step__head">
+                            <div>
+                              <h2 className="agent-step__title">3 · Generate clips</h2>
+                              <p className="agent-step__meta">
+                                import JSON plan · first clip selected
+                              </p>
+                            </div>
+                            <span
+                              className={`agent-chip ${
+                                planDone ? "agent-chip--done" : ""
+                              }`}
+                            >
+                              {planDone ? "imported" : "waiting"}
+                            </span>
+                          </div>
+                          <p className="agent-flow__step-copy">
+                            Paste the JSON returned by your clip agent (or choose a
+                            file). It must match{" "}
+                            <a
+                              href="/CLIP_PLAN_SCHEMA.example.json"
+                              target="_blank"
+                              rel="noreferrer"
+                            >
+                              CLIP_PLAN_SCHEMA.example.json
+                            </a>
+                            . That plan creates the clips in the sidebar for trim,
+                            captions, and export.
+                          </p>
+                          <label className="field">
+                            <span className="field__label">Clip plan JSON</span>
+                            <textarea
+                              className="input agent-brief-panel__textarea agent-brief-panel__textarea--code"
+                              rows={10}
+                              value={planImportText}
+                              onChange={(e) => setPlanImportText(e.target.value)}
+                              placeholder={
+                                '{\n  "version": 1,\n  "clips": [\n    {\n      "title": "…",\n      "t_in": 2628,\n      "t_out": 2785,\n      "post_text": "…",\n      "tags": ["@host"]\n    }\n  ]\n}'
+                              }
+                              spellCheck={false}
+                            />
+                          </label>
+                          <div className="clip-bar__row">
+                            <button
+                              type="button"
+                              className="btn btn--primary"
+                              onClick={importClipPlan}
+                              disabled={planImportBusy || !planImportText.trim()}
+                            >
+                              {planImportBusy ? "Importing…" : "Generate clips"}
+                            </button>
+                            <button
+                              type="button"
+                              className="btn btn--paper"
+                              onClick={() => planFileRef.current?.click()}
+                              disabled={planImportBusy}
+                            >
+                              Choose File
+                            </button>
+                          </div>
+                          {agentMsgStep === "import" && agentMsg && (
+                            <JobStatus busy={planImportBusy} message={agentMsg} />
+                          )}
+                          <input
+                            ref={planFileRef}
+                            type="file"
+                            accept=".json,.md,.txt,application/json,text/plain"
+                            className="sr-only"
+                            onChange={onPlanFileChosen}
+                          />
+                        </section>
+                        </div>
+                      </div>
+                    ) : paneTab === "post" ? (
+                      <div className="paper paper--post">
+                        <div className="paper__body">
+                          {!activeClip ? (
+                            <p className="transcript__empty">
+                              Select a clip first, then write the post.
+                            </p>
+                          ) : (
                             <div className="post-package">
+                              <div className="craft-zone__head">
+                                <h3 className="craft-zone__title">
+                                  The post
+                                  {hasPostContent ? "" : " · optional"}
+                                </h3>
+                                <span className="post-package__count">
+                                  {(activeClip.post_text || "").length} ch
+                                </span>
+                              </div>
                               {activeClip.why && (
-                                <p className="text-meta post-package__why">
-                                  <strong>Why · </strong>
-                                  {activeClip.why}
+                                <p className="post-package__why">
+                                  why · {activeClip.why}
                                 </p>
                               )}
-                              <label className="field">
-                                <span className="field__label field__label--row">
-                                  <span>X post text (quote body)</span>
-                                  <span className="post-package__count">
-                                    {postCharCount}
-                                    {postCharCount > 280 ? " · long for X" : ""}
-                                  </span>
-                                </span>
-                                <textarea
-                                  className="input post-package__text"
-                                  rows={5}
-                                  value={activeClip.post_text || ""}
-                                  placeholder="Write or edit the X quote body…"
-                                  onChange={(e) => {
-                                    const text = e.target.value;
-                                    setSource((prev) => {
-                                      if (!prev || !activeClipId) return prev;
-                                      return {
-                                        ...prev,
-                                        clips: (prev.clips || []).map((c) =>
-                                          c.id === activeClipId
-                                            ? { ...c, post_text: text }
-                                            : c
-                                        ),
-                                      };
+                              <textarea
+                                className="input paper-input"
+                                rows={10}
+                                value={activeClip.post_text || ""}
+                                placeholder="Write or edit the X quote body…"
+                                onChange={(e) => {
+                                  const t = e.target.value;
+                                  setSource((prev) => {
+                                    if (!prev || !activeClipId) return prev;
+                                    return {
+                                      ...prev,
+                                      clips: (prev.clips || []).map((c) =>
+                                        c.id === activeClipId
+                                          ? { ...c, post_text: t }
+                                          : c
+                                      ),
+                                    };
+                                  });
+                                }}
+                                onBlur={async (e) => {
+                                  if (!source || !activeClip) return;
+                                  const next = postWithHandles(
+                                    e.target.value,
+                                    activeClip.tags || []
+                                  );
+                                  try {
+                                    await api.updateClip(source.id, activeClip.id, {
+                                      post_text: next,
                                     });
-                                  }}
-                                  onBlur={async (e) => {
-                                    if (!source || !activeClip) return;
-                                    try {
-                                      await api.updateClip(source.id, activeClip.id, {
-                                        post_text: e.target.value,
+                                    if (next !== e.target.value) {
+                                      setSource((prev) => {
+                                        if (!prev || !activeClipId) return prev;
+                                        return {
+                                          ...prev,
+                                          clips: (prev.clips || []).map((c) =>
+                                            c.id === activeClipId
+                                              ? { ...c, post_text: next }
+                                              : c
+                                          ),
+                                        };
                                       });
-                                    } catch (err) {
-                                      setError(String(err.message || err));
                                     }
-                                  }}
-                                  spellCheck
-                                />
-                              </label>
-                              <div className="clip-bar__row">
+                                  } catch (err) {
+                                    setError(String(err.message || err));
+                                  }
+                                }}
+                                spellCheck
+                              />
+                              <div className="post-package__actions">
                                 <button
                                   type="button"
-                                  className="btn btn--sm"
+                                  className="btn btn--primary btn--sm"
                                   disabled={!(activeClip.post_text || "").trim()}
                                   onClick={() =>
-                                    copyText(activeClip.post_text || "", "post")
+                                    copyText(
+                                      postWithHandles(
+                                        activeClip.post_text || "",
+                                        activeClip.tags || []
+                                      ),
+                                      "post"
+                                    )
                                   }
                                 >
                                   {copyFlash === "post" ? "Copied" : "Copy post"}
                                 </button>
-                                {source.summary_post_url && (
-                                  <button
-                                    type="button"
-                                    className="btn btn--sm btn--ghost"
-                                    onClick={() =>
-                                      copyText(source.summary_post_url, "summary")
-                                    }
-                                    title="Quote this summary when posting the clip"
-                                  >
-                                    {copyFlash === "summary"
-                                      ? "Copied"
-                                      : "Copy summary URL"}
-                                  </button>
-                                )}
-                                {source.url && (
-                                  <button
-                                    type="button"
-                                    className="btn btn--sm btn--ghost"
-                                    onClick={() => copyText(source.url, "source")}
-                                  >
-                                    {copyFlash === "source"
-                                      ? "Copied"
-                                      : "Copy source URL"}
-                                  </button>
-                                )}
                               </div>
-                              {(activeClip.tags || []).length > 0 && (
-                                <p className="text-meta">
-                                  Tags · {(activeClip.tags || []).join(" ")}
-                                </p>
-                              )}
+
+                              <div className="post-url-fields">
+                                <label className="field">
+                                  <span className="field__label">Summary URL</span>
+                                  <input
+                                    className="input"
+                                    type="url"
+                                    readOnly
+                                    value={source.summary_post_url || ""}
+                                    placeholder="No summary URL yet"
+                                  />
+                                  <button
+                                    type="button"
+                                    className="btn btn--primary btn--sm"
+                                    disabled={!(source.summary_post_url || "").trim()}
+                                    onClick={() =>
+                                      copyText(source.summary_post_url || "", "summary")
+                                    }
+                                  >
+                                    {copyFlash === "summary" ? "Copied" : "Copy"}
+                                  </button>
+                                </label>
+                                <label className="field">
+                                  <span className="field__label">Source URL</span>
+                                  <input
+                                    className="input"
+                                    type="url"
+                                    readOnly
+                                    value={source.url || ""}
+                                    placeholder="No source URL"
+                                  />
+                                  <button
+                                    type="button"
+                                    className="btn btn--primary btn--sm"
+                                    disabled={!(source.url || "").trim()}
+                                    onClick={() =>
+                                      copyText(source.url || "", "source")
+                                    }
+                                  >
+                                    {copyFlash === "source" ? "Copied" : "Copy"}
+                                  </button>
+                                </label>
+                              </div>
                             </div>
                           )}
                         </div>
-                      )}
-                    </div>
-
-                    <div className="clip-list">
-                      <div className="section-label">
-                        <h3 className="section-label__title">Clips</h3>
-                        <div className="section-label__actions">
-                          <span className="section-label__count">
-                            {(source.clips || []).length}
-                          </span>
-                          <button
-                            type="button"
-                            className="btn btn--sm"
-                            onClick={addClip}
-                            disabled={exportBusy}
-                          >
-                            + New clip
-                          </button>
-                        </div>
                       </div>
-                      <ul className="clip-list__items">
-                        {(source.clips || []).map((c) => (
-                          <li
-                            key={c.id}
-                            className={`list-item list-item--panel ${
-                              c.id === activeClipId ? "list-item--active" : ""
-                            }`}
-                            onClick={() => {
-                              setActiveClipId(c.id);
-                              seekTo(c.t_in);
-                            }}
-                          >
-                            <div className="list-item__stack">
-                              <span className="list-item__title">{c.title}</span>
-                              <span className="text-mono text-secondary">
-                                {formatTs(c.t_in)}–{formatTs(c.t_out)}
-                                {c.score != null ? ` · score ${c.score}` : ""}
-                                {(c.captions || []).length > 0
-                                  ? ` · ${c.captions.length} cap`
-                                  : ""}
-                                {c.post_text ? " · post" : ""}
-                              </span>
-                            </div>
-                            <span className={pillStatus(c.status)}>
-                              {c.from_plan && c.status === "draft" ? "plan" : c.status}
-                            </span>
-                            <button
-                              type="button"
-                              className="btn btn--icon btn--danger"
-                              title="Delete clip"
-                              onClick={(e) => {
-                                e.stopPropagation();
-                                removeClip(c.id);
-                              }}
-                            >
-                              ×
-                            </button>
-                          </li>
-                        ))}
-                      </ul>
-                    </div>
-                  </div>
-
-                  <div className="transcript-col">
-                    <div className="section-label">
-                      <div className="pane-tabs" role="tablist">
-                        <button
-                          type="button"
-                          role="tab"
-                          aria-selected={rightPane === "transcript"}
-                          className={`pane-tab ${
-                            rightPane === "transcript" ? "pane-tab--active" : ""
-                          }`}
-                          onClick={() => setRightPane("transcript")}
-                        >
-                          Transcript
-                        </button>
-                        <button
-                          type="button"
-                          role="tab"
-                          aria-selected={rightPane === "captions"}
-                          className={`pane-tab ${
-                            rightPane === "captions" ? "pane-tab--active" : ""
-                          }`}
-                          onClick={() => setRightPane("captions")}
-                        >
-                          Captions
-                          {clipCaptions.length > 0 ? (
-                            <span className="pane-tab__count">{clipCaptions.length}</span>
-                          ) : null}
-                        </button>
-                      </div>
-                      {rightPane === "transcript" ? (
-                        <span className="text-meta" title="⌥ click start · ⇧ click end · I/O keys">
-                          ⌥ start · ⇧ end · I/O
-                        </span>
-                      ) : (
-                        <span
-                          className="text-meta"
-                          title="Times are relative to clip start; scrub the source video"
-                        >
-                          clip-relative · 0:00 = export start
-                        </span>
-                      )}
-                    </div>
-
-                    {rightPane === "transcript" ? (
-                      <div className="panel transcript">
-                        {segments.map((seg, i) => {
-                          const segIn =
-                            activeClip &&
-                            seg.start < activeClip.t_out &&
-                            seg.end > activeClip.t_in;
-                          return (
-                            <button
-                              type="button"
-                              id={`seg-${i}`}
-                              key={i}
-                              className={[
-                                "transcript-line",
-                                i === activeSegIndex ? "transcript-line--active" : "",
-                                segIn ? "transcript-line--in-range" : "",
-                              ]
-                                .filter(Boolean)
-                                .join(" ")}
-                              onClick={(e) => onSegClick(seg, e)}
-                            >
-                              <span className="transcript-line__ts">
-                                {formatTs(seg.start)}
-                              </span>
-                              <span className="transcript-line__text">{seg.text}</span>
-                            </button>
-                          );
-                        })}
-                        {!segments.length && (
-                          <p className="transcript__empty">No segments in transcript.</p>
-                        )}
-                      </div>
-                    ) : (
-                      <div className="panel transcript caption-editor">
-                        {!activeClip ? (
-                          <p className="transcript__empty">Select a clip first.</p>
-                        ) : !clipCaptions.length ? (
-                          <div className="caption-empty">
-                            <p className="transcript__empty">
-                              No captions yet for this clip.
-                            </p>
-                            <p className="text-meta caption-empty__hint">
-                              Captions are built from the source transcript for the clip’s
-                              in/out range. You still scrub the <strong>source</strong>{" "}
-                              video; cue times are 0-based so they match the exported file.
-                            </p>
-                            <button
-                              type="button"
-                              className="btn btn--primary btn--sm"
-                              onClick={generateCaptions}
-                              disabled={captionsBusy}
-                            >
-                              {captionsBusy ? "Generating…" : "Generate captions"}
-                            </button>
-                          </div>
-                        ) : (
-                          <>
-                            {captionsStale && (
-                              <div className="caption-stale caption-stale--banner">
-                                Range moved since generate — regenerate recommended.
-                              </div>
-                            )}
-                            <p className="text-meta caption-empty__hint caption-empty__hint--inline">
-                              Scrub the source; times are relative to this clip (0:00 =
-                              export start).
-                            </p>
-                            <ul className="caption-list">
-                              {clipCaptions.map((cap) => {
-                                const active =
-                                  activeCaption && activeCaption.id === cap.id;
-                                return (
-                                  <li
-                                    key={cap.id}
-                                    className={`caption-row ${
-                                      active ? "caption-row--active" : ""
-                                    }`}
-                                  >
-                                    <button
-                                      type="button"
-                                      className="caption-row__seek text-mono"
-                                      title="Seek to this cue on the source video"
-                                      onClick={() =>
-                                        activeClip &&
-                                        seekTo(activeClip.t_in + Number(cap.start))
-                                      }
-                                    >
-                                      {formatTs(cap.start)}–{formatTs(cap.end)}
-                                    </button>
-                                    <textarea
-                                      className="caption-row__text input"
-                                      rows={2}
-                                      value={cap.text || ""}
-                                      onChange={(e) =>
-                                        patchCaptionLocal(cap.id, {
-                                          text: e.target.value,
-                                        })
-                                      }
-                                      onBlur={persistCaptions}
-                                      spellCheck
-                                    />
-                                    <button
-                                      type="button"
-                                      className="btn btn--icon btn--danger"
-                                      title="Remove cue"
-                                      onClick={() => removeCaptionAndSave(cap.id)}
-                                    >
-                                      ×
-                                    </button>
-                                  </li>
-                                );
-                              })}
-                            </ul>
-                            <div className="caption-editor__footer">
+                    ) : paneTab === "captions" ? (
+                      <div className="paper">
+                        <div className="paper__body">
+                          {!activeClip ? (
+                            <p className="transcript__empty">Select a clip first.</p>
+                          ) : !clipCaptions.length ? (
+                            <div className="caption-empty">
+                              <p className="caption-empty__hint">
+                                Captions are built from the source transcript for this
+                                clip&apos;s in/out. You still scrub the{" "}
+                                <strong>source</strong> video; cue times are 0-based so
+                                they match the exported file. Burn-in is not built —
+                                export writes an .srt sidecar.
+                              </p>
                               <button
                                 type="button"
-                                className="btn btn--sm"
+                                className="btn btn--primary"
                                 onClick={generateCaptions}
                                 disabled={captionsBusy}
                               >
-                                {captionsBusy
-                                  ? "Generating…"
-                                  : "Regenerate from transcript"}
-                              </button>
-                              <button
-                                type="button"
-                                className="btn btn--sm btn--primary"
-                                onClick={persistCaptions}
-                              >
-                                Save captions
+                                {captionsBusy ? "Generating…" : "Generate captions"}
                               </button>
                             </div>
-                          </>
-                        )}
+                          ) : (
+                            <>
+                              {captionsStale && (
+                                <div className="caption-stale">
+                                  You moved the in point after these were written.
+                                  Regenerate, or the SRT will sit off the picture.
+                                </div>
+                              )}
+                              <div className="caption-legend">
+                                <span>0:00 = the first frame of the export</span>
+                                <span>right margin = where it lives on the source</span>
+                              </div>
+                              <ul className="caption-list">
+                                {clipCaptions.map((cap) => {
+                                  const active =
+                                    activeCaption && activeCaption.id === cap.id;
+                                  return (
+                                    <li
+                                      key={cap.id}
+                                      className={`caption-row ${
+                                        active ? "caption-row--active" : ""
+                                      }`}
+                                    >
+                                      <button
+                                        type="button"
+                                        className="caption-row__seek"
+                                        title="Seek to this cue on the source video"
+                                        onClick={() =>
+                                          activeClip &&
+                                          seekTo(
+                                            activeClip.t_in + Number(cap.start)
+                                          )
+                                        }
+                                      >
+                                        {formatTs(cap.start)}
+                                      </button>
+                                      <textarea
+                                        className="caption-row__text"
+                                        rows={1}
+                                        value={cap.text || ""}
+                                        ref={(el) => {
+                                          if (!el) return;
+                                          el.style.height = "auto";
+                                          el.style.height = `${el.scrollHeight}px`;
+                                        }}
+                                        onChange={(e) => {
+                                          const el = e.target;
+                                          el.style.height = "auto";
+                                          el.style.height = `${el.scrollHeight}px`;
+                                          patchCaptionLocal(cap.id, {
+                                            text: e.target.value,
+                                          });
+                                        }}
+                                        onBlur={persistCaptions}
+                                        spellCheck
+                                      />
+                                      <button
+                                        type="button"
+                                        className="btn btn--icon btn--danger"
+                                        title="Remove cue"
+                                        onClick={() => removeCaptionAndSave(cap.id)}
+                                      >
+                                        ×
+                                      </button>
+                                    </li>
+                                  );
+                                })}
+                              </ul>
+                              <div className="caption-editor__footer">
+                                <button
+                                  type="button"
+                                  className="btn btn--primary btn--sm"
+                                  onClick={generateCaptions}
+                                  disabled={captionsBusy}
+                                >
+                                  {captionsBusy
+                                    ? "Generating…"
+                                    : "Regenerate from transcript"}
+                                </button>
+                                <button
+                                  type="button"
+                                  className="btn btn--paper"
+                                  onClick={persistCaptions}
+                                >
+                                  Save captions
+                                </button>
+                                <p className="caption-note">
+                                  SRT beside the mp4 · burn-in is not built
+                                </p>
+                              </div>
+                            </>
+                          )}
+                        </div>
                       </div>
+                    ) : (
+                      <>
+                        <div className="paper">
+                          <div className="paper__body paper__body--measure">
+                            <div className="paper__grid">
+                              <div className="paper__margin" aria-hidden>
+                                {activeClip &&
+                                  segments.length > 0 &&
+                                  (() => {
+                                    const first = segments[0]?.start ?? 0;
+                                    const last =
+                                      segments[segments.length - 1]?.end ??
+                                      (sourceDuration || 1);
+                                    const span = Math.max(0.001, last - first);
+                                    const topPct = Math.min(
+                                      100,
+                                      Math.max(
+                                        0,
+                                        ((activeClip.t_in - first) / span) * 100
+                                      )
+                                    );
+                                    const botPct = Math.min(
+                                      100,
+                                      Math.max(
+                                        0,
+                                        ((activeClip.t_out - first) / span) * 100
+                                      )
+                                    );
+                                    const phPct = Math.min(
+                                      100,
+                                      Math.max(
+                                        0,
+                                        ((currentTime - first) / span) * 100
+                                      )
+                                    );
+                                    const h = Math.max(0, botPct - topPct);
+                                    return (
+                                      <>
+                                        <div
+                                          className="paper__margin-rule"
+                                          style={{
+                                            top: `${topPct}%`,
+                                            height: `${h}%`,
+                                          }}
+                                        />
+                                        <div
+                                          className="paper__margin-cap"
+                                          style={{ top: `${topPct}%` }}
+                                        />
+                                        <div
+                                          className="paper__margin-cap"
+                                          style={{ top: `calc(${botPct}% - 2px)` }}
+                                        />
+                                        <span
+                                          className="paper__margin-label"
+                                          style={{ top: `calc(${topPct}% - 12px)` }}
+                                        >
+                                          in
+                                        </span>
+                                        <span
+                                          className="paper__margin-label"
+                                          style={{ top: `calc(${botPct}% + 4px)` }}
+                                        >
+                                          out
+                                        </span>
+                                        <div
+                                          className="paper__margin-playhead"
+                                          style={{ top: `${phPct}%` }}
+                                        />
+                                      </>
+                                    );
+                                  })()}
+                              </div>
+                              <div className="paper__text">
+                                {segments.map((seg, i) => {
+                                  const segIn =
+                                    activeClip &&
+                                    seg.start < activeClip.t_out &&
+                                    seg.end > activeClip.t_in;
+                                  return (
+                                    <button
+                                      type="button"
+                                      id={`seg-${i}`}
+                                      key={i}
+                                      className={[
+                                        "transcript-line",
+                                        i === activeSegIndex
+                                          ? "transcript-line--active"
+                                          : "",
+                                        segIn ? "transcript-line--in-range" : "",
+                                      ]
+                                        .filter(Boolean)
+                                        .join(" ")}
+                                      onClick={(e) => onSegClick(seg, e)}
+                                    >
+                                      <span className="transcript-line__ts">
+                                        {formatTs(seg.start)}
+                                      </span>
+                                      <span className="transcript-line__text">
+                                        {seg.text}
+                                      </span>
+                                    </button>
+                                  );
+                                })}
+                                {!segments.length && (
+                                  <p className="transcript__empty">
+                                    No segments in transcript.
+                                  </p>
+                                )}
+                              </div>
+                            </div>
+                          </div>
+                        </div>
+                        <div className="hint-row">
+                          <span>
+                            Click a transcript line to move the video playhead.
+                            Press <strong>I</strong> to set the clip start and{" "}
+                            <strong>O</strong> to set the clip end at the playhead.
+                            Highlighted wash is this clip&apos;s range.
+                          </span>
+                        </div>
+                      </>
                     )}
                   </div>
-                </div>
+                </>
               )}
             </>
           )}
-        </main>
+        </section>
+
+        {source && source.status === "ready" && mediaSrc && (
+          <aside className="craft-col">
+            <div className="craft-col__scroll">
+              <div className="monitor">
+                <video
+                  ref={videoRef}
+                  src={mediaSrc}
+                  controls
+                  onTimeUpdate={(e) => setCurrentTime(e.target.currentTime)}
+                />
+                <div
+                  className={`monitor__badge ${inRange ? "monitor__badge--in" : ""}`}
+                >
+                  {formatTs(currentTime)}
+                  {inRange ? " · in clip" : ""}
+                </div>
+              </div>
+
+              {activeClip && sourceDuration > 0 && (
+                <div className="ruler">
+                  <div className="ruler__head">
+                    <span className="ruler__label">Source ruler</span>
+                    <span className="ruler__meta">
+                      {formatTs(sourceDuration)} · {clipCount} clip
+                      {clipCount === 1 ? "" : "s"}
+                    </span>
+                  </div>
+                  <div className="ruler__track" aria-hidden>
+                    {(source.clips || [])
+                      .filter((c) => c.id !== activeClipId)
+                      .map((c) => (
+                        <div
+                          key={c.id}
+                          className="ruler__ghost"
+                          style={{
+                            left: `${Math.min(
+                              100,
+                              Math.max(0, (c.t_in / sourceDuration) * 100)
+                            )}%`,
+                            width: `${Math.min(
+                              100,
+                              Math.max(
+                                0.3,
+                                ((c.t_out - c.t_in) / sourceDuration) * 100
+                              )
+                            )}%`,
+                          }}
+                        />
+                      ))}
+                    <div
+                      className="ruler__range"
+                      style={{
+                        left: `${Math.min(
+                          100,
+                          Math.max(0, (activeClip.t_in / sourceDuration) * 100)
+                        )}%`,
+                        width: `${Math.min(
+                          100,
+                          Math.max(
+                            0.4,
+                            ((activeClip.t_out - activeClip.t_in) / sourceDuration) *
+                              100
+                          )
+                        )}%`,
+                      }}
+                    />
+                    <div
+                      className="ruler__playhead"
+                      style={{
+                        left: `${Math.min(
+                          100,
+                          Math.max(0, (currentTime / sourceDuration) * 100)
+                        )}%`,
+                      }}
+                    />
+                  </div>
+                  <div className="ruler__ticks" aria-hidden>
+                    <span>0:00</span>
+                    <span>{formatTs(sourceDuration / 2)}</span>
+                    <span>{formatTs(sourceDuration)}</span>
+                  </div>
+                  <div className="ruler__legend">
+                    <span>
+                      <span className="ruler__swatch ruler__swatch--playhead" />
+                      playhead
+                    </span>
+                    <span>
+                      <span className="ruler__swatch ruler__swatch--clip" />
+                      this clip
+                    </span>
+                    <span>
+                      <span className="ruler__swatch ruler__swatch--other" />
+                      other clips
+                    </span>
+                  </div>
+                </div>
+              )}
+
+              <div className="craft-zone">
+                <div className="craft-zone__head">
+                  <h3 className="craft-zone__title">Clip</h3>
+                </div>
+                <label className="field">
+                  <span className="field__label">Clip title</span>
+                  <input
+                    className="input input--serif"
+                    value={activeClip?.title || ""}
+                    onChange={(e) =>
+                      setSource((prev) => ({
+                        ...prev,
+                        clips: (prev.clips || []).map((c) =>
+                          c.id === activeClipId
+                            ? { ...c, title: e.target.value }
+                            : c
+                        ),
+                      }))
+                    }
+                    onBlur={(e) => saveClipPatch({ title: e.target.value })}
+                    disabled={!activeClip}
+                  />
+                </label>
+                <div className="mark-grid">
+                  <div className="mark-grid__side">
+                    <label className="field">
+                      <span className="field__label">Start</span>
+                      <input
+                        className="input input--serif input--time"
+                        value={inDraft}
+                        onChange={(e) => setInDraft(e.target.value)}
+                        onBlur={() => applyTypedTimes({ seek: "in" })}
+                        onKeyDown={(e) => {
+                          if (e.key === "Enter") {
+                            e.preventDefault();
+                            applyTypedTimes({ seek: "in" });
+                          }
+                        }}
+                        placeholder="0:00"
+                        disabled={!activeClip}
+                      />
+                    </label>
+                    <button
+                      type="button"
+                      className="btn btn--mark"
+                      onClick={setInFromPlayhead}
+                      disabled={!activeClip}
+                      title="Set start at playhead (I)"
+                    >
+                      Set start
+                      <span className="kbd">I</span>
+                    </button>
+                  </div>
+                  <div className="mark-grid__side">
+                    <label className="field">
+                      <span className="field__label">End</span>
+                      <input
+                        className="input input--serif input--time"
+                        value={outDraft}
+                        onChange={(e) => setOutDraft(e.target.value)}
+                        onBlur={() => applyTypedTimes({ seek: "out" })}
+                        onKeyDown={(e) => {
+                          if (e.key === "Enter") {
+                            e.preventDefault();
+                            applyTypedTimes({ seek: "out" });
+                          }
+                        }}
+                        placeholder="0:30"
+                        disabled={!activeClip}
+                      />
+                    </label>
+                    <button
+                      type="button"
+                      className="btn btn--mark"
+                      onClick={setOutFromPlayhead}
+                      disabled={!activeClip}
+                      title="Set end at playhead (O)"
+                    >
+                      Set end
+                      <span className="kbd">O</span>
+                    </button>
+                  </div>
+                </div>
+                <div className="mark-duration">
+                  <span className="mark-duration__value">
+                    {activeClip
+                      ? `${Math.max(
+                          0,
+                          activeClip.t_out - activeClip.t_in
+                        ).toFixed(1)}s`
+                      : "—"}
+                  </span>
+                  <span className="mark-duration__human">
+                    {activeClip
+                      ? formatDurationHuman(activeClip.t_out - activeClip.t_in)
+                      : ""}
+                  </span>
+                </div>
+                <div className="mark-actions">
+                  <button
+                    type="button"
+                    className="btn"
+                    onClick={() => activeClip && seekTo(activeClip.t_in)}
+                    disabled={!activeClip}
+                  >
+                    Play start
+                  </button>
+                  <button
+                    type="button"
+                    className="btn"
+                    onClick={() =>
+                      activeClip &&
+                      seekTo(Math.max(0, (activeClip.t_out || 0) - 1))
+                    }
+                    disabled={!activeClip}
+                  >
+                    Play end
+                  </button>
+                  <button
+                    type="button"
+                    className="btn btn--primary"
+                    onClick={() => applyTypedTimes({ seek: "in" })}
+                    disabled={!activeClip}
+                  >
+                    Apply changes
+                  </button>
+                </div>
+              </div>
+
+              <div className="craft-zone craft-zone--captions">
+                <div className="craft-zone__head">
+                  <h3 className="craft-zone__title">Caption</h3>
+                </div>
+                <div className="clip-caption-actions">
+                  <button
+                    type="button"
+                    className="btn"
+                    onClick={generateCaptions}
+                    disabled={!activeClip || captionsBusy}
+                  >
+                    {captionsBusy
+                      ? "Generating…"
+                      : clipCaptions.length
+                        ? "Regenerate captions"
+                        : "Generate captions"}
+                  </button>
+                  <button
+                    type="button"
+                    className="btn"
+                    onClick={() => setPaneTab("captions")}
+                    disabled={!activeClip}
+                  >
+                    Edit captions
+                    {clipCaptions.length ? ` (${clipCaptions.length})` : ""}
+                  </button>
+                </div>
+                {captionsBusy && (
+                  <JobStatus busy message="Generating captions…" />
+                )}
+                {captionsMsg && !captionsBusy && (
+                  <JobStatus
+                    busy={false}
+                    message={captionsMsg}
+                    onDismiss={() => setCaptionsMsg(null)}
+                  />
+                )}
+                {captionsStale && (
+                  <p className="caption-stale caption-stale--craft">
+                    Clip range changed since captions were generated — regenerate
+                    for an accurate export.
+                  </p>
+                )}
+              </div>
+
+              <div className="craft-zone craft-zone--export">
+                <div className="craft-zone__head">
+                  <h3 className="craft-zone__title">Export</h3>
+                </div>
+                <div className="export-bar">
+                  <button
+                    type="button"
+                    className="btn"
+                    onClick={exportOne}
+                    disabled={!activeClip || exportBusy}
+                  >
+                    {exportBusy
+                      ? exportPercent != null
+                        ? `Exporting… ${exportPercent}%`
+                        : "Exporting…"
+                      : "Export clip"}
+                  </button>
+                  <button
+                    type="button"
+                    className="btn btn--primary"
+                    onClick={exportAll}
+                    disabled={exportBusy || !clipCount}
+                  >
+                    Export all ({clipCount})
+                  </button>
+                </div>
+                {exportStatusOpen && (
+                  <JobStatus
+                    busy={exportBusy}
+                    title={
+                      exportBusy
+                        ? null
+                        : exportFailed
+                          ? "Export failed"
+                          : "Export success"
+                    }
+                    message={exportMsg}
+                    percent={exportPercent}
+                    variant={
+                      exportBusy ? undefined : exportFailed ? "error" : "success"
+                    }
+                    paths={
+                      !exportBusy && !exportFailed && exportPaths.length
+                        ? exportPaths
+                        : undefined
+                    }
+                    onDismiss={() => {
+                      setExportStatusOpen(false);
+                      setExportMsg(null);
+                      setExportPath(null);
+                      setExportFailed(false);
+                    }}
+                    onReveal={
+                      !exportBusy &&
+                      !exportFailed &&
+                      (exportPath || activeClip?.export_path)
+                        ? revealExport
+                        : undefined
+                    }
+                    revealLabel="Open in Finder"
+                  />
+                )}
+              </div>
+            </div>
+          </aside>
+        )}
+
+        {!source && (
+          <aside className="craft-col craft-col--welcome">
+            <div className="empty-card">
+              <h3 className="empty-card__title">Transcription model</h3>
+              <p className="empty-card__body">
+                <strong>small · lightest:</strong> the daily driver at any length.
+                ~5 min on a 1.5h English pod.
+              </p>
+              <p className="empty-card__body">
+                <strong>medium · mid:</strong> stronger than small. Prefer under
+                ~45–60 min, or when small mangles names/jargon.
+              </p>
+            </div>
+            <div className="empty-card empty-card--warn">
+              <p className="empty-card__body">
+                Make sure the Whisper model you pick is already downloaded (MLX
+                models land on first use and can take a while). If something fails
+                or looks wrong, check the project README for setup and
+                troubleshooting.
+              </p>
+            </div>
+            <p className="empty-foot">
+              local only · nothing leaves this machine
+              <br />
+              library lives in data/library.json
+            </p>
+          </aside>
+        )}
       </div>
     </div>
   );

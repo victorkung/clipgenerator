@@ -45,6 +45,25 @@ DATA.mkdir(exist_ok=True)
 # Agent flow tab (Summary → Clips → Import). Default OFF for open-source / plain API.
 # ./scripts/serve.sh sets CLIPGENERATOR_AGENT_FLOW=1 for local daily-driver use.
 # Private editorial packs live in prompts/private/ (gitignored) — not required at runtime.
+# Whisper models offered in the UI / accepted by the API (daily driver only).
+# CLI scripts/transcribe.py still accepts more sizes for power users.
+ALLOWED_WHISPER_MODELS = frozenset({"small", "medium"})
+DEFAULT_WHISPER_MODEL = "small"
+
+
+def normalize_whisper_model(model: str | None) -> str:
+    """Map to an allowed model; unknown / heavy sizes fall back to small."""
+    m = (model or DEFAULT_WHISPER_MODEL).strip()
+    if m in ALLOWED_WHISPER_MODELS:
+        return m
+    # Common aliases / retired UI options
+    if m in {"small.en"}:
+        return "small"
+    if m in {"medium.en"}:
+        return "medium"
+    return DEFAULT_WHISPER_MODEL
+
+
 AGENT_FLOW_ENABLED = os.environ.get("CLIPGENERATOR_AGENT_FLOW", "0").strip().lower() in (
     "1",
     "true",
@@ -300,7 +319,7 @@ def _load_transcript(path: Path | None) -> dict[str, Any] | None:
 class IngestBody(BaseModel):
     url: str | None = None
     video_path: str | None = None
-    model: str = "small"
+    model: str = DEFAULT_WHISPER_MODEL
     title: str | None = None
     force_transcribe: bool = False
 
@@ -381,6 +400,8 @@ class SourceUpdate(BaseModel):
     title: str | None = None
     podbrief_text: str | None = None
     summary_post_url: str | None = None
+    summary_prompt_text: str | None = None
+    clip_prompt_text: str | None = None
 
 
 class ClipPlanImportBody(BaseModel):
@@ -399,6 +420,10 @@ def patch_source(source_id: str, body: SourceUpdate) -> dict[str, Any]:
         patch["podbrief_text"] = body.podbrief_text
     if body.summary_post_url is not None:
         patch["summary_post_url"] = body.summary_post_url.strip() or None
+    if body.summary_prompt_text is not None:
+        patch["summary_prompt_text"] = body.summary_prompt_text
+    if body.clip_prompt_text is not None:
+        patch["clip_prompt_text"] = body.clip_prompt_text
     if body.title is not None:
         t = clean_title(body.title.strip()) if body.title.strip() else ""
         if not t:
@@ -562,6 +587,7 @@ def _run_ingest(source_id: str, body: IngestBody) -> None:
 
 @app.post("/api/ingest")
 def ingest(body: IngestBody) -> dict[str, Any]:
+    body.model = normalize_whisper_model(body.model)
     if not body.url and not body.video_path:
         raise HTTPException(400, "url or video_path required")
     title = clean_title(body.title or body.url or body.video_path or "Untitled")
@@ -586,7 +612,7 @@ def retry_transcribe(source_id: str, model: str | None = None) -> dict[str, Any]
         raise HTTPException(404, "source not found")
     if not s.get("video_path") or not Path(s["video_path"]).is_file():
         raise HTTPException(400, "source has no video file to transcribe")
-    use_model = model or s.get("model") or "small"
+    use_model = normalize_whisper_model(model or s.get("model") or DEFAULT_WHISPER_MODEL)
     body = IngestBody(
         video_path=s["video_path"],
         model=use_model,
