@@ -119,8 +119,55 @@ def _set_job(source_id: str, **kwargs: Any) -> None:
     with jobs_lock:
         cur = job_status.get(source_id, {})
         cur.setdefault("stages", PIPELINE_STAGES)
-        cur.update(kwargs)
+        for k, v in kwargs.items():
+            # Drop null metrics so clients never see JSON null for % / ETA
+            if v is None and k in ("percent", "eta_s", "elapsed_s"):
+                cur.pop(k, None)
+            else:
+                cur[k] = v
         job_status[source_id] = cur
+
+
+def _maybe_heal_ready(source: dict[str, Any]) -> dict[str, Any]:
+    """
+    If STT finished on disk but the API died before marking ready (restart mid-job),
+    promote the source to ready so the UI does not stick on 'transcribing' / 500 loops.
+    """
+    status = source.get("status")
+    if status not in ("transcribing", "downloading", "pending", "error"):
+        return source
+    vp = source.get("video_path")
+    if not vp:
+        return source
+    video = Path(vp)
+    if not video.is_file():
+        return source
+    json_path = video.parent / f"{video.stem}.transcript.json"
+    if not json_path.is_file():
+        return source
+    # Transcript exists — heal
+    txt_path = video.parent / f"{video.stem}.transcript.txt"
+    patch: dict[str, Any] = {
+        "status": "ready",
+        "error": None,
+        "transcript_json": str(json_path),
+        "transcript_txt": str(txt_path) if txt_path.is_file() else source.get("transcript_txt"),
+    }
+    if not source.get("clips"):
+        end = min(30.0, float(source.get("duration") or 30.0))
+        patch["clips"] = [make_clip(title="Clip 1", t_in=0.0, t_out=end)]
+    updated = lib.update_source(source["id"], patch)
+    if updated:
+        _set_job(
+            source["id"],
+            stage="done",
+            percent=100,
+            progress_kind="measured",
+            message="Ready",
+            detail="Transcript ready — create clips in the editor",
+        )
+        return updated
+    return {**source, **patch}
 
 
 def _probe_url(url: str) -> dict[str, Any]:
@@ -427,7 +474,13 @@ def health() -> dict[str, Any]:
 
 @app.get("/api/sources")
 def list_sources() -> list[dict[str, Any]]:
-    return lib.list_sources()
+    out: list[dict[str, Any]] = []
+    for s in lib.list_sources():
+        try:
+            out.append(_maybe_heal_ready(s))
+        except Exception:
+            out.append(s)
+    return out
 
 
 @app.get("/api/sources/{source_id}")
@@ -435,6 +488,10 @@ def get_source(source_id: str) -> dict[str, Any]:
     s = lib.get_source(source_id)
     if not s:
         raise HTTPException(404, "source not found")
+    try:
+        s = _maybe_heal_ready(s)
+    except Exception:
+        pass
     with jobs_lock:
         s = {**s, "job": job_status.get(source_id)}
     return s
@@ -624,13 +681,16 @@ def _run_ingest(source_id: str, body: IngestBody) -> None:
         if not json_path.is_file():
             raise RuntimeError("transcript json missing after STT")
 
+        # Re-read library row so we don't clobber concurrent renames / clips
+        s = lib.get_source(source_id) or s
         s["transcript_json"] = str(json_path)
         s["transcript_txt"] = str(txt_path) if txt_path.is_file() else None
+        s["video_path"] = str(video_path)
         s["status"] = "ready"
         s["error"] = None
         s["model"] = body.model
         if not s.get("clips"):
-            end = min(30.0, float(s["duration"] or 30.0))
+            end = min(30.0, float(s.get("duration") or 30.0))
             s["clips"] = [make_clip(title="Clip 1", t_in=0.0, t_out=end)]
         lib.upsert_source(s)
         _set_job(
@@ -644,6 +704,14 @@ def _run_ingest(source_id: str, body: IngestBody) -> None:
             elapsed_s=None,
         )
     except Exception as e:
+        # If STT actually wrote a transcript before we failed, prefer ready over error
+        try:
+            s_chk = lib.get_source(source_id) or s
+            healed = _maybe_heal_ready(dict(s_chk))
+            if healed.get("status") == "ready":
+                return
+        except Exception:
+            pass
         s = lib.get_source(source_id) or s
         s["status"] = "error"
         s["error"] = str(e)

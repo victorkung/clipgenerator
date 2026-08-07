@@ -122,8 +122,8 @@ This file is **auto-loaded** every Grok session in this repo. Do **not** re-read
 - **Run UI:** `./scripts/serve.sh` → `:8787` · `cd app/frontend && npm run dev` → `:5173` (proxies `/api`). No `RELOAD=1` during long jobs.
 - **Layout:** `videos/YYYY-MM-DD ShowName/` — date is **ingest/posting day (today)**, not original publish date. Library: gitignored `data/library.json`.
 - **Stack:** bash + yt-dlp + ffmpeg · FastAPI `app/backend` · Vite/React `app/frontend` · STT local MLX only (no cloud key on happy path).
-- **Whisper UI / API:** `small` (default) · `medium` only. Heavier sizes still work via CLI `transcribe.py` if needed.
-- **Desk UI:** three columns — Sources+Clips rail · paper center · craft (monitor / clip trim / export). Fonts: Newsreader / Instrument Sans / IBM Plex Mono; terracotta accent.
+- **Whisper UI / API:** `small` (default, faster) · `medium` (clearer names/jargon, ~2× slower). CLI supports more sizes.
+- **Desk UI:** three columns — Sources+Clips rail · paper center · craft (monitor + collapsible Clip / Caption plate / Export). Fonts: Newsreader / Instrument Sans / IBM Plex Mono; terracotta accent.
 - **Editor:** type Start/End + Enter/Apply → seek player + scroll transcript. Keys `I`/`O` set start/end at playhead. Click transcript line seeks.
 - **Clip captions:** still scrub **source** video; **Generate captions** → clip-relative cues. Center **Captions** tab edits text; craft **Caption plate** = font/plate/position (app-wide localStorage). Monitor overlay matches burn-in. Export burns when cues exist + always writes `.srt`.
 - **Pane tabs:** Transcript · Captions · Post · **Agent handoff** (optional). Flag `CLIPGENERATOR_AGENT_FLOW` default **0**; `./scripts/serve.sh` sets **1** for daily driver.

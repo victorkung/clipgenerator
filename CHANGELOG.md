@@ -27,6 +27,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- **Craft accordion:** Clip / Caption plate / Export sections collapse independently (all open by default) to reduce sidebar scroll on laptops
+- **Whisper model copy:** small = faster default; medium = clearer when names/jargon/noise fail — actionable, no confusing length cutoffs
+- **Post-STT resilience:** heal sources to ready when transcript exists on disk after API restart; ignore transient poll errors during long STT
 - **Honest STT progress:** Whisper no longer fakes “% done” or a precise ETA; shows real elapsed time, indeterminate bar, and a rough wall-time range (download still uses real yt-dlp %)
 - Agent handoff paper fills the center pane (no dark void under short content)
 - Agent prompts persist on-device via localStorage (every edit) + debounced library mirror; labels say “saved on this device”

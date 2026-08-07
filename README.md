@@ -129,8 +129,8 @@ Speech-to-text is **on-device** via [`mlx-whisper`](https://github.com/ml-explor
 
 | Model | Use when |
 |-------|----------|
-| **`small` (default)** | Any length. Fast enough for long English pods on M-series. |
-| **`medium`** | Harder audio / names / jargon; prefer shorter shows (~≤45–60 min). |
+| **`small` (default)** | Faster. Best speed/quality for most shows. Long episodes are fine when you need clip finding more than perfect names. |
+| **`medium`** | Clearer. When small mangles names, tickers, or jargon — or audio is noisy. ~2× slower; use when caption accuracy matters. |
 
 CLI (`scripts/transcribe.py`) still accepts heavier sizes (`turbo`, `large-v3`, …) if you need them.
 

@@ -9,19 +9,19 @@ const DEFAULT_STAGES = [
   { id: "done", label: "Ready" },
 ];
 
-/** Daily-driver models only. Labels stay short; `guide` is the when-to-use hint. */
+/** Daily-driver models only. Labels short; `guide` = when to pick this. */
 const WHISPER_MODELS = [
   {
     id: "small",
-    label: "small · lightest",
+    label: "small · faster",
     guide:
-      "Default for any length. Fast daily driver (~5 min STT on a 1.5h English pod).",
+      "Default. Best speed/quality for most shows. Use for long episodes when you need clip finding more than perfect names.",
   },
   {
     id: "medium",
-    label: "medium · mid",
+    label: "medium · clearer",
     guide:
-      "Stronger than small. Prefer under ~45–60 min, or when small mangles names/jargon.",
+      "When small mangles names, tickers, or jargon — or audio is noisy. ~2× slower; worth it when caption accuracy matters.",
   },
 ];
 
@@ -487,6 +487,12 @@ export default function App() {
     loadSharedPrompt(LS_CLIP_PROMPT, DEFAULT_CLIP_PROMPT)
   );
   const [captionStyle, setCaptionStyle] = useState(() => loadCaptionStyle());
+  /** Craft rail accordion — all open by default so first visit shows everything. */
+  const [craftOpen, setCraftOpen] = useState({
+    clip: true,
+    caption: true,
+    export: true,
+  });
   const [summaryUrlDraft, setSummaryUrlDraft] = useState("");
   const [importNotice, setImportNotice] = useState(null);
   const [retryBusy, setRetryBusy] = useState(false);
@@ -557,6 +563,10 @@ export default function App() {
 
   function patchCaptionStyle(partial) {
     setCaptionStyle((prev) => normalizeCaptionStyleClient({ ...prev, ...partial }));
+  }
+
+  function toggleCraftSection(key) {
+    setCraftOpen((prev) => ({ ...prev, [key]: !prev[key] }));
   }
 
   /** Map overlay to the letterboxed video picture (object-fit: contain). */
@@ -682,7 +692,11 @@ export default function App() {
   }, [selectedId]);
 
   useEffect(() => {
-    if (selectedId) loadSource(selectedId).catch((e) => setError(String(e.message || e)));
+    if (selectedId) {
+      loadSource(selectedId)
+        .then(() => setError(null))
+        .catch((e) => setError(String(e.message || e)));
+    }
   }, [selectedId, loadSource]);
 
   useEffect(() => {
@@ -690,7 +704,17 @@ export default function App() {
       return undefined;
     }
     const t = setInterval(() => {
-      loadSource(source.id).then(() => refreshList()).catch(() => {});
+      loadSource(source.id)
+        .then(() => {
+          setError(null);
+          return refreshList();
+        })
+        .catch((e) => {
+          // Transient API blips during long STT (e.g. server restart) — don't panic the UI
+          const msg = String(e.message || e);
+          if (/internal server error|failed to fetch|network/i.test(msg)) return;
+          setError(msg);
+        });
     }, 1500);
     return () => clearInterval(t);
   }, [source, loadSource, refreshList]);
@@ -2703,10 +2727,24 @@ export default function App() {
                 </div>
               )}
 
-              <div className="craft-zone">
-                <div className="craft-zone__head">
+              <div
+                className={`craft-zone ${
+                  craftOpen.clip ? "" : "craft-zone--collapsed"
+                }`}
+              >
+                <button
+                  type="button"
+                  className="craft-zone__head craft-zone__head--toggle"
+                  onClick={() => toggleCraftSection("clip")}
+                  aria-expanded={craftOpen.clip}
+                >
                   <h3 className="craft-zone__title">Clip</h3>
-                </div>
+                  <span className="craft-zone__chevron" aria-hidden>
+                    {craftOpen.clip ? "▾" : "▸"}
+                  </span>
+                </button>
+                {craftOpen.clip && (
+                <div className="craft-zone__body">
                 <label className="field">
                   <span className="field__label">Clip title</span>
                   <input
@@ -2830,12 +2868,28 @@ export default function App() {
                     Apply changes
                   </button>
                 </div>
+                </div>
+                )}
               </div>
 
-              <div className="craft-zone craft-zone--captions">
-                <div className="craft-zone__head">
+              <div
+                className={`craft-zone craft-zone--captions ${
+                  craftOpen.caption ? "" : "craft-zone--collapsed"
+                }`}
+              >
+                <button
+                  type="button"
+                  className="craft-zone__head craft-zone__head--toggle"
+                  onClick={() => toggleCraftSection("caption")}
+                  aria-expanded={craftOpen.caption}
+                >
                   <h3 className="craft-zone__title">Caption plate</h3>
-                </div>
+                  <span className="craft-zone__chevron" aria-hidden>
+                    {craftOpen.caption ? "▾" : "▸"}
+                  </span>
+                </button>
+                {craftOpen.caption && (
+                <div className="craft-zone__body">
                 <div className="caption-plate-controls">
                   <div className="caption-plate-controls__row">
                     <label className="field">
@@ -2962,12 +3016,28 @@ export default function App() {
                     for an accurate export.
                   </p>
                 )}
+                </div>
+                )}
               </div>
 
-              <div className="craft-zone craft-zone--export">
-                <div className="craft-zone__head">
+              <div
+                className={`craft-zone craft-zone--export ${
+                  craftOpen.export ? "" : "craft-zone--collapsed"
+                }`}
+              >
+                <button
+                  type="button"
+                  className="craft-zone__head craft-zone__head--toggle"
+                  onClick={() => toggleCraftSection("export")}
+                  aria-expanded={craftOpen.export}
+                >
                   <h3 className="craft-zone__title">Export</h3>
-                </div>
+                  <span className="craft-zone__chevron" aria-hidden>
+                    {craftOpen.export ? "▾" : "▸"}
+                  </span>
+                </button>
+                {craftOpen.export && (
+                <div className="craft-zone__body">
                 <div className="export-bar">
                   <button
                     type="button"
@@ -3026,6 +3096,8 @@ export default function App() {
                     revealLabel="Open in Finder"
                   />
                 )}
+                </div>
+                )}
               </div>
             </div>
           </aside>
@@ -3036,20 +3108,21 @@ export default function App() {
             <div className="empty-card">
               <h3 className="empty-card__title">Transcription model</h3>
               <p className="empty-card__body">
-                <strong>small · lightest:</strong> the daily driver at any length.
-                ~5 min on a 1.5h English pod.
+                <strong>small · faster:</strong> default. Best speed/quality for
+                most shows. Long episodes are fine when you need clip finding more
+                than perfect names.
               </p>
               <p className="empty-card__body">
-                <strong>medium · mid:</strong> stronger than small. Prefer under
-                ~45–60 min, or when small mangles names/jargon.
+                <strong>medium · clearer:</strong> when small mangles names,
+                tickers, or jargon — or audio is noisy. ~2× slower; use when
+                caption accuracy matters more than wait time.
               </p>
             </div>
             <div className="empty-card empty-card--warn">
               <p className="empty-card__body">
-                Make sure the Whisper model you pick is already downloaded (MLX
-                models land on first use and can take a while). If something fails
-                or looks wrong, check the project README for setup and
-                troubleshooting.
+                First run of a model downloads weights (can take a while). Later
+                runs reuse the cache. Free RAM helps STT stay fast on long
+                episodes.
               </p>
             </div>
             <p className="empty-foot">
