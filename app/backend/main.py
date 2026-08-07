@@ -190,6 +190,7 @@ def _run_download(url: str, out_template: str, source_id: str) -> Path:
                 source_id,
                 stage="downloading",
                 percent=overall,
+                progress_kind="measured",
                 message=f"Downloading… {pct:.1f}%",
                 detail=line[:160],
             )
@@ -205,6 +206,7 @@ def _run_download(url: str, out_template: str, source_id: str) -> Path:
                 source_id,
                 stage="downloading",
                 percent=overall,
+                progress_kind="measured",
                 message=f"Downloading fragments {cur_f}/{tot_f}",
                 detail=line[:160],
             )
@@ -220,6 +222,46 @@ def _run_download(url: str, out_template: str, source_id: str) -> Path:
         if c.suffix.lower() in {".mp4", ".mkv", ".webm", ".mov"} and c.is_file():
             return c
     raise RuntimeError("download finished but source video not found")
+
+
+def _fmt_dur_short(seconds: float | None) -> str:
+    """Human duration for job messages (e.g. 2h 17m, 12m 05s)."""
+    if seconds is None or seconds < 0:
+        return "—"
+    s = int(round(float(seconds)))
+    h, rem = divmod(s, 3600)
+    m, sec = divmod(rem, 60)
+    if h > 0:
+        return f"{h}h {m:02d}m"
+    if m > 0:
+        return f"{m}m {sec:02d}s"
+    return f"{sec}s"
+
+
+def _stt_rough_range_s(model: str, duration_s: float | None) -> tuple[int, int]:
+    """
+    Conservative wall-time *range* for segment-only MLX STT on Apple Silicon.
+
+    Not live progress — used only as a rough expectation in the UI.
+    Low = healthy machine; high = memory pressure / thermal / longer audio.
+    """
+    # factor of audio duration (wall / audio)
+    bands = {
+        "tiny": (0.04, 0.12),
+        "small": (0.05, 0.18),
+        "small.en": (0.05, 0.16),
+        "medium": (0.10, 0.35),
+        "turbo": (0.07, 0.22),
+        "large-v3-turbo": (0.07, 0.22),
+        "distil-large-v3": (0.06, 0.20),
+        "large-v3": (0.18, 0.55),
+    }
+    lo_f, hi_f = bands.get(model, (0.08, 0.25))
+    audio = float(duration_s or 3600.0)
+    load = 30  # model load / audio extract buffer
+    lo = max(45, int(audio * lo_f + load))
+    hi = max(lo + 60, int(audio * hi_f + load * 2))
+    return lo, hi
 
 
 def _run_transcribe(
@@ -241,40 +283,50 @@ def _run_transcribe(
     if force:
         cmd.append("--force")
 
-    # Rough wall-clock estimate: medium ~4–8× realtime on Apple Silicon after load
-    # Wall-time factor vs audio duration (segment-only STT on M-series; rough)
-    rt = {
-        "tiny": 0.04,
-        "small": 0.06,
-        "small.en": 0.05,
-        "medium": 0.12,
-        "turbo": 0.08,
-        "large-v3-turbo": 0.08,
-        "distil-large-v3": 0.07,
-        "large-v3": 0.25,
-    }.get(model, 0.1)
-    est_s = (duration_s or 3600) * rt + 45  # + model load buffer
+    # Whisper does not emit decode % over the pipe — do not invent one.
+    lo_s, hi_s = _stt_rough_range_s(model, duration_s)
+    audio_label = _fmt_dur_short(duration_s)
+    rough_label = f"roughly {_fmt_dur_short(lo_s)}–{_fmt_dur_short(hi_s)} total (machine-dependent)"
     started = __import__("time").time()
 
     stop_hb = threading.Event()
 
     def heartbeat() -> None:
         while not stop_hb.wait(2.0):
-            elapsed = __import__("time").time() - started
-            # Map 0–est into 55–96%
-            frac = min(0.97, elapsed / max(est_s, 1))
-            overall = 55 + int(frac * 41)
-            remain = max(0, int(est_s - elapsed))
-            mins, secs = divmod(remain, 60)
+            elapsed = int(__import__("time").time() - started)
             _set_job(
                 source_id,
                 stage="transcribing",
-                percent=overall,
-                message=f"Transcribing with Whisper ({model})… ~{mins}m {secs:02d}s left (est.)",
-                detail=f"Local MLX Whisper · model {model} · audio ~{int(duration_s or 0)}s",
-                eta_s=remain,
-                elapsed_s=int(elapsed),
+                # Stage band only — bar is indeterminate in the UI for STT
+                percent=None,
+                progress_kind="indeterminate",
+                message=f"Transcribing with Whisper ({model})… elapsed {_fmt_dur_short(elapsed)}",
+                detail=(
+                    f"Local MLX Whisper · model {model} · audio {audio_label} · "
+                    f"{rough_label} · not live decode progress"
+                ),
+                elapsed_s=elapsed,
+                rough_est_lo_s=lo_s,
+                rough_est_hi_s=hi_s,
+                eta_s=None,
             )
+
+    # Immediate first paint before subprocess blocks
+    _set_job(
+        source_id,
+        stage="transcribing",
+        percent=None,
+        progress_kind="indeterminate",
+        message=f"Transcribing with Whisper ({model})… starting",
+        detail=(
+            f"Local MLX Whisper · model {model} · audio {audio_label} · "
+            f"{rough_label} · not live decode progress"
+        ),
+        elapsed_s=0,
+        rough_est_lo_s=lo_s,
+        rough_est_hi_s=hi_s,
+        eta_s=None,
+    )
 
     hb = threading.Thread(target=heartbeat, daemon=True)
     hb.start()
@@ -544,9 +596,11 @@ def _run_ingest(source_id: str, body: IngestBody) -> None:
             _set_job(
                 source_id,
                 stage="transcribing",
-                percent=55,
-                message=f"Transcribing with Whisper ({body.model})…",
-                detail="Extracting audio then running local MLX Whisper",
+                percent=None,
+                progress_kind="indeterminate",
+                message=f"Transcribing with Whisper ({body.model})… preparing",
+                detail="Extracting audio then running local MLX Whisper (no live decode %)",
+                elapsed_s=0,
             )
             s["status"] = "transcribing"
             s["model"] = body.model
@@ -583,9 +637,11 @@ def _run_ingest(source_id: str, body: IngestBody) -> None:
             source_id,
             stage="done",
             percent=100,
+            progress_kind="measured",
             message="Ready",
             detail="Transcript ready — create clips in the editor",
             eta_s=0,
+            elapsed_s=None,
         )
     except Exception as e:
         s = lib.get_source(source_id) or s
@@ -648,10 +704,12 @@ def retry_transcribe(source_id: str, model: str | None = None) -> dict[str, Any]
             _set_job(
                 source_id,
                 stage="transcribing",
-                percent=55,
-                message=f"Transcribing with Whisper ({use_model})…",
-                detail="Retry — using existing download",
+                percent=None,
+                progress_kind="indeterminate",
+                message=f"Transcribing with Whisper ({use_model})… preparing",
+                detail="Retry — using existing download (no live decode %)",
                 stages=PIPELINE_STAGES,
+                elapsed_s=0,
             )
             _run_transcribe(
                 video_path,

@@ -348,29 +348,57 @@ function JobStatus({
   );
 }
 
+function formatElapsedLabel(seconds) {
+  if (seconds == null || Number.isNaN(Number(seconds))) return null;
+  const s = Math.max(0, Math.floor(Number(seconds)));
+  const h = Math.floor(s / 3600);
+  const m = Math.floor((s % 3600) / 60);
+  const sec = s % 60;
+  if (h > 0) return `${h}h ${String(m).padStart(2, "0")}m`;
+  if (m > 0) return `${m}m ${String(sec).padStart(2, "0")}s`;
+  return `${sec}s`;
+}
+
 function PipelineProgress({ source }) {
   const job = source.job || {};
   const stages = job.stages || DEFAULT_STAGES;
   const stage = job.stage || source.status || "queued";
   const idx = stageIndex(stage, stages);
+  const indeterminate =
+    job.progress_kind === "indeterminate" ||
+    (stage === "transcribing" && typeof job.percent !== "number");
   const percent =
-    typeof job.percent === "number"
+    !indeterminate && typeof job.percent === "number"
       ? job.percent
-      : Math.round((idx / Math.max(1, stages.length - 1)) * 100);
+      : !indeterminate
+        ? Math.round((idx / Math.max(1, stages.length - 1)) * 100)
+        : null;
   const msg = job.message || source.status;
   const detail = job.detail;
+  const elapsedLabel = formatElapsedLabel(job.elapsed_s);
 
   return (
     <div className="pipeline">
       <p className="pipeline__headline">
         {msg || "Working on this source…"}
-        {typeof percent === "number" ? ` — ${percent}% of the way through.` : ""}
+        {!indeterminate && typeof percent === "number"
+          ? ` — ${percent}% of the way through.`
+          : ""}
       </p>
-      <div className="pipeline__track">
-        <div
-          className="pipeline__fill"
-          style={{ width: `${Math.min(100, Math.max(2, percent))}%` }}
-        />
+      <div
+        className={`pipeline__track ${
+          indeterminate ? "pipeline__track--indeterminate" : ""
+        }`}
+        aria-hidden
+      >
+        {indeterminate ? (
+          <div className="pipeline__fill pipeline__fill--indeterminate" />
+        ) : (
+          <div
+            className="pipeline__fill"
+            style={{ width: `${Math.min(100, Math.max(2, percent ?? 2))}%` }}
+          />
+        )}
       </div>
       <div className="pipeline__steps">
         {stages.map((st, i) => {
@@ -384,13 +412,28 @@ function PipelineProgress({ source }) {
               <span>
                 {st.label}
                 {i < idx ? " ✓" : ""}
-                {i === idx && typeof percent === "number" ? ` · ${percent}%` : ""}
+                {/* Real % only on download (measured); STT is not live progress */}
+                {i === idx &&
+                !indeterminate &&
+                typeof percent === "number" &&
+                stage === "downloading"
+                  ? ` · ${percent}%`
+                  : ""}
+                {i === idx && indeterminate && elapsedLabel
+                  ? ` · ${elapsedLabel}`
+                  : ""}
               </span>
             </div>
           );
         })}
       </div>
       {detail && <p className="pipeline__detail">{detail}</p>}
+      {indeterminate && (
+        <p className="pipeline__detail pipeline__detail--note">
+          Whisper does not report decode progress — elapsed time is real; the
+          time range is only a rough guess and can run longer under memory load.
+        </p>
+      )}
       <p className="pipeline__detail">
         you can switch to a ready source and come back — the job keeps running · nothing
         uploads
