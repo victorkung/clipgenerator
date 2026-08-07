@@ -199,7 +199,7 @@
   color: var(--color-text-faint);
   font-family: var(--font-serif);
   font-size: 13px;
-  font-style: italic;
+  font-style: normal;
   list-style: none;
   line-height: 1.45;
   background: transparent;
