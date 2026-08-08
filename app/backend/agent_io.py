@@ -387,6 +387,29 @@ def _coerce_score(val: Any) -> int | float | None:
         return None
 
 
+def append_handles_line(post_text: str, tags: list[str] | None) -> str:
+    """
+    One-shot inject of @handles as the last line of post text (blank line above).
+
+    Used only on clip-plan import — not on copy/save/switch. Skips if the handle
+    line is already present at the end of the body.
+    """
+    handle_line = " ".join(str(t).strip() for t in (tags or []) if str(t).strip()).strip()
+    body = post_text or ""
+    if not handle_line:
+        return body
+    trimmed = re.sub(r"\s+$", "", body)
+    if trimmed.endswith(handle_line):
+        return body
+    lines = trimmed.split("\n")
+    last = (lines[-1] if lines else "").strip()
+    if last == handle_line:
+        return body
+    if not trimmed:
+        return handle_line
+    return f"{trimmed}\n\n{handle_line}"
+
+
 def plan_item_to_clip_fields(item: dict[str, Any]) -> dict[str, Any]:
     """Map one plan clip → fields for make_clip / update_clip."""
     if not isinstance(item, dict):
@@ -405,12 +428,15 @@ def plan_item_to_clip_fields(item: dict[str, Any]) -> dict[str, Any]:
     tags = item.get("tags") or []
     if isinstance(tags, str):
         tags = [t.strip() for t in re.split(r"[,;\s]+", tags) if t.strip()]
+    tags = [str(t).strip() for t in tags if str(t).strip()]
     core_quotes = item.get("core_quotes") or item.get("quotes") or []
     if isinstance(core_quotes, str):
         core_quotes = [core_quotes]
     post_text = (
         item.get("post_text") or item.get("post") or item.get("x_post") or ""
     ).strip()
+    # Bake @handles into post_text once at import; UI never re-appends.
+    post_text = append_handles_line(post_text, tags)
 
     return {
         "title": title[:200],
@@ -423,7 +449,7 @@ def plan_item_to_clip_fields(item: dict[str, Any]) -> dict[str, Any]:
         "meaning": (item.get("meaning") or item.get("what_they_mean") or "").strip(),
         "score": _coerce_score(item.get("score")),
         "core_quotes": [str(q).strip() for q in core_quotes if str(q).strip()],
-        "tags": [str(t).strip() for t in tags if str(t).strip()],
+        "tags": tags,
         "vk_angle": item.get("vk_angle"),
         "platform_captions": {
             "tiktok": str(captions.get("tiktok") or "").strip(),

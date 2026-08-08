@@ -2,12 +2,14 @@
 
 from __future__ import annotations
 
+import base64
 import json
 import os
 import re
 import subprocess
 import sys
 import threading
+from io import BytesIO
 from pathlib import Path
 from typing import Any
 
@@ -40,6 +42,7 @@ from captions import (  # noqa: E402
     normalize_caption_style,
     normalize_cues,
     prepare_burn_overlays,
+    render_caption_plate_image,
     slice_transcript_to_clip,
 )
 from naming import clean_title, make_project_dir  # noqa: E402
@@ -459,6 +462,51 @@ class ExportBody(BaseModel):
     caption_style: dict[str, Any] | None = None
     # Burn when cues exist (default True). SRT is always written when cues exist.
     burn_captions: bool = True
+
+
+class CaptionPlatePreviewBody(BaseModel):
+    """Render one plate with the same engine as export burn-in (for monitor parity)."""
+
+    text: str = ""
+    caption_style: dict[str, Any] | None = None
+    video_w: int = Field(1920, ge=16, le=7680)
+    video_h: int = Field(1080, ge=16, le=4320)
+
+
+@app.post("/api/caption-plate-preview")
+def caption_plate_preview(body: CaptionPlatePreviewBody) -> dict[str, Any]:
+    """
+    Return a base64 PNG + placement for the active cue.
+
+    Uses the identical Pillow renderer as export, so line wraps match burn-in.
+    """
+    text = (body.text or "").strip()
+    if not text:
+        raise HTTPException(400, "text required")
+    style = normalize_caption_style(body.caption_style)
+    try:
+        img, ox, oy, lines = render_caption_plate_image(
+            text,
+            style,
+            video_w=int(body.video_w),
+            video_h=int(body.video_h),
+        )
+    except Exception as e:
+        raise HTTPException(500, f"plate render failed: {e}") from e
+    buf = BytesIO()
+    img.save(buf, format="PNG")
+    return {
+        "png_base64": base64.b64encode(buf.getvalue()).decode("ascii"),
+        "x": ox,
+        "y": oy,
+        "plate_w": img.width,
+        "plate_h": img.height,
+        "video_w": int(body.video_w),
+        "video_h": int(body.video_h),
+        "lines": lines,
+        "line_count": len(lines),
+        "caption_style": style,
+    }
 
 
 @app.get("/api/health")
@@ -1238,6 +1286,8 @@ def _export_clip(
 
     if overlays:
         # [0:v] base, [1:v]… plate stills. Chain overlays with enable=between.
+        # Plates are fully opaque RGB (alpha 0 or 255 only). alpha=straight avoids
+        # premultiplied wash that made solid cream/night look translucent.
         n = len(overlays)
         filter_parts: list[str] = []
         for i in range(n):
@@ -1249,7 +1299,8 @@ def _export_clip(
             # Commas escaped for filtergraph
             en = f"between(t\\,{ov['start']:.3f}\\,{ov['end']:.3f})"
             filter_parts.append(
-                f"{prev}[p{i}]overlay={ov['x']}:{ov['y']}:format=auto:enable='{en}'{out_label}"
+                f"{prev}[p{i}]overlay={ov['x']}:{ov['y']}"
+                f":format=auto:alpha=straight:enable='{en}'{out_label}"
             )
             prev = out_label
         filter_complex = ";".join(filter_parts)
@@ -1317,23 +1368,47 @@ def _export_clip(
     try:
         for line in proc.stdout:
             line = line.strip()
-            if not line.startswith("out_time_ms="):
+            # ffmpeg -progress keys:
+            #   out_time_us = microseconds (preferred)
+            #   out_time_ms = ALSO microseconds historically (name is a lie)
+            # Treating out_time_ms as real milliseconds makes 1s look like 1000s → 99%.
+            if line.startswith("out_time_us=") or line.startswith("out_time_ms="):
+                raw = line.split("=", 1)[1].strip()
+            elif line.startswith("out_time=") and "." in line:
+                # out_time=HH:MM:SS.micro
+                raw_t = line.split("=", 1)[1].strip()
+                try:
+                    parts = raw_t.split(":")
+                    if len(parts) == 3:
+                        secs = (
+                            int(parts[0]) * 3600
+                            + int(parts[1]) * 60
+                            + float(parts[2])
+                        )
+                        frac = min(0.99, max(0.0, secs / max(duration, 0.001)))
+                        pct = int(frac * 100)
+                        if on_progress and pct > last_pct:
+                            last_pct = pct
+                            on_progress(pct, secs)
+                except ValueError:
+                    pass
                 continue
-            raw = line.split("=", 1)[1].strip()
+            else:
+                continue
             if raw in ("N/A", ""):
                 continue
             try:
-                # ffmpeg may report microseconds as int; treat as µs if huge
                 val = int(raw)
-                if val > 10_000_000_000:  # absurd — skip
+                if val < 0:
                     continue
-                # out_time_ms is milliseconds in modern ffmpeg
-                secs = val / 1000.0
-                if secs > duration * 50:  # wrong unit (µs) fallback
-                    secs = val / 1_000_000.0
+                secs = val / 1_000_000.0  # always µs for out_time_us / out_time_ms
+                if secs > duration * 1.25:
+                    # Unusable spike — skip rather than clamp to 99%
+                    continue
                 frac = min(0.99, max(0.0, secs / max(duration, 0.001)))
                 pct = int(frac * 100)
-                if on_progress and pct != last_pct:
+                # Only advance — never report a lower or equal %
+                if on_progress and pct > last_pct:
                     last_pct = pct
                     on_progress(pct, secs)
             except ValueError:
@@ -1431,30 +1506,38 @@ def _run_export_job(
 
             def on_prog(pct: int, _secs: float, *, _i=i, _title=title, _burn=burning) -> None:
                 overall = int(clip_base + (pct / 100.0) * clip_span)
+                overall = min(99, max(0, overall))
                 detail = (
                     f"H.264 + AAC · burn-in · clip {_i + 1} of {total}"
                     if _burn
                     else f"H.264 + AAC · clip {_i + 1} of {total}"
                 )
+                # Message has NO percent — UI shows job.percent once.
+                short = (_title[:36] + "…") if len(_title) > 37 else _title
                 _set_export_job(
                     job_id,
                     status="running",
-                    percent=min(99, overall),
-                    message=f"Encoding {_i + 1}/{total}: “{_title}”… {pct}%",
+                    percent=overall,
+                    message=f"Encoding {_i + 1}/{total}: “{short}”",
                     detail=detail,
                     current_clip=_i + 1,
                     total_clips=total,
                     clip_percent=pct,
                 )
 
+            short_title = (title[:36] + "…") if len(title) > 37 else title
             _set_export_job(
                 job_id,
                 status="running",
                 percent=int(clip_base),
-                message=f"Encoding {i + 1}/{total}: “{title}”…",
+                message=(
+                    f"Preparing captions {i + 1}/{total}: “{short_title}”"
+                    if burning
+                    else f"Encoding {i + 1}/{total}: “{short_title}”"
+                ),
                 detail=(
                     f"Starting clip {i + 1} of {total}"
-                    + (" · burning captions" if burning else "")
+                    + (" · rendering caption plates" if burning else "")
                 ),
                 current_clip=i + 1,
                 total_clips=total,

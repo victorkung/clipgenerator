@@ -223,16 +223,17 @@ def _ass_escape(text: str) -> str:
 def _plate_colours(plate: str) -> tuple[str, str]:
     """
     ASS &HAABBGGRR for (primary text, back/box).
-    BorderStyle=3 uses OutlineColour as the opaque box fill.
+    BorderStyle=3 uses OutlineColour as the box fill.
+    Alpha 00 = fully opaque (ASS convention).
     """
     if plate == "night":
-        # cream text on near-black plate
+        # cream text on solid near-black plate
         primary = "&H00E4EFF4"  # paper cream-ish
-        box = "&HE60A0A0A"  # ~90% opaque black
+        box = "&H000A0A0A"  # opaque black
     else:
-        # ink text on cream plate
+        # ink text on solid cream plate (#f4efe4 → BGR e4,ef,f4)
         primary = "&H0014181A"
-        box = "&HE5E4F4F4"  # cream, mostly opaque
+        box = "&H00E4EFF4"  # opaque cream
     return primary, box
 
 
@@ -372,25 +373,62 @@ def _wrap_lines(text: str, font: Any, max_width: int, draw: Any) -> list[str]:
     return lines
 
 
-def render_caption_plate_png(
+def caption_layout_metrics(
+    style: dict[str, Any] | None, *, video_w: int, video_h: int
+) -> dict[str, Any]:
+    """
+    Shared layout numbers for burn-in PNG and the UI monitor preview.
+
+    Keep in sync with app/frontend captionPlateLayout().
+    """
+    st = normalize_caption_style(style)
+    font_size = max(14, int(round(float(st["font_size"]) * video_h)))
+    pad_x = max(8, int(font_size * 0.45))
+    pad_y = max(6, int(font_size * 0.28))
+    max_plate_w = max(1, int(float(st["max_width"]) * video_w))
+    wrap_w = max(1, max_plate_w - pad_x * 2)
+    line_h = font_size + max(2, int(font_size * 0.12))
+    return {
+        "style": st,
+        "font_size": font_size,
+        "pad_x": pad_x,
+        "pad_y": pad_y,
+        "max_plate_w": max_plate_w,
+        "wrap_w": wrap_w,
+        "line_h": line_h,
+        # line-height as multiple of font size (CSS)
+        "line_height": line_h / max(font_size, 1),
+        "pad_x_em": pad_x / max(font_size, 1),
+        "pad_y_em": pad_y / max(font_size, 1),
+    }
+
+
+def render_caption_plate_image(
     text: str,
     style: dict[str, Any] | None,
     *,
     video_w: int,
     video_h: int,
-    out_path: Path,
-) -> tuple[Path, int, int]:
+) -> tuple[Any, int, int, list[str]]:
     """
-    Render one caption plate PNG (RGBA).
+    Render one caption plate as a PIL RGBA image.
 
-    Returns (path, overlay_x, overlay_y) where x/y are top-left in video pixels
-    matching the same anchor math as ASS / the UI preview.
+    Returns (image, overlay_x, overlay_y, wrapped_lines) in full video pixels.
+    Same raster path for export burn-in and the monitor preview API.
     """
     from PIL import Image, ImageDraw, ImageFont
 
-    st = normalize_caption_style(style)
+    video_w = max(16, int(video_w))
+    video_h = max(16, int(video_h))
+    m = caption_layout_metrics(style, video_w=video_w, video_h=video_h)
+    st = m["style"]
+    font_size = m["font_size"]
+    pad_x = m["pad_x"]
+    pad_y = m["pad_y"]
+    wrap_w = m["wrap_w"]
+    line_h = m["line_h"]
+
     _name, font_path = resolve_caption_font(st)
-    font_size = max(14, int(round(float(st["font_size"]) * video_h)))
     try:
         if font_path and Path(font_path).is_file():
             font = ImageFont.truetype(font_path, font_size)
@@ -399,39 +437,34 @@ def render_caption_plate_png(
     except OSError:
         font = ImageFont.load_default()
 
-    max_text_w = int(float(st["max_width"]) * video_w)
-    pad_x = max(8, int(font_size * 0.45))
-    pad_y = max(6, int(font_size * 0.28))
-
     # Measure on a throwaway image
-    probe = Image.new("RGBA", (max_text_w + pad_x * 2, font_size * 6), (0, 0, 0, 0))
+    probe = Image.new("RGBA", (wrap_w + pad_x * 2, font_size * 8), (0, 0, 0, 0))
     draw = ImageDraw.Draw(probe)
-    lines = _wrap_lines(text.strip(), font, max_text_w - pad_x * 2, draw)
+    lines = _wrap_lines(text.strip(), font, wrap_w, draw)
     if not lines:
         lines = [" "]
 
-    line_h = font_size + max(2, int(font_size * 0.12))
     text_h = line_h * len(lines)
     text_w = 0
     for ln in lines:
         bbox = draw.textbbox((0, 0), ln, font=font)
         text_w = max(text_w, bbox[2] - bbox[0])
 
-    plate_w = min(video_w, text_w + pad_x * 2)
-    plate_h = text_h + pad_y * 2
+    plate_w = min(video_w, max(1, text_w + pad_x * 2))
+    plate_h = max(1, text_h + pad_y * 2)
 
     if st["plate"] == "night":
-        bg = (10, 10, 10, 230)
+        bg = (10, 10, 10, 255)
         fg = (244, 239, 228, 255)
     else:
-        bg = (244, 239, 228, 235)
+        bg = (244, 239, 228, 255)
         fg = (26, 24, 20, 255)
 
+    # Fully opaque RGB plate (no soft alpha) so ffmpeg overlay cannot look translucent.
     img = Image.new("RGBA", (plate_w, plate_h), (0, 0, 0, 0))
     d = ImageDraw.Draw(img)
-    # Square-ish plate (2px radius visual: small radius)
-    radius = 2
-    d.rounded_rectangle([0, 0, plate_w - 1, plate_h - 1], radius=radius, fill=bg)
+    # Square plate (Desk radius-sm) — solid fill, no anti-aliased rounded corners
+    d.rectangle([0, 0, plate_w - 1, plate_h - 1], fill=bg)
 
     y = pad_y
     for ln in lines:
@@ -446,13 +479,14 @@ def render_caption_plate_png(
         d.text((x, y), ln, font=font, fill=fg)
         y += line_h
 
-    out_path = Path(out_path)
-    img.save(out_path, "PNG")
+    # Snap every non-zero alpha to 255 so burn-in is never semi-transparent
+    alpha = img.getchannel("A")
+    alpha = alpha.point(lambda a: 255 if a > 0 else 0)
+    img.putalpha(alpha)
 
-    # Anchor point (same fractions as ASS / preview) → top-left for overlay
+    # Anchor point → top-left for overlay
     ax = caption_anchor_x_frac(st) * video_w
     ay = caption_anchor_y_frac(st) * video_h
-    # ASS alignment: bottom row anchors bottom-center of text, middle center, top top-center
     anchor = st["anchor"]
     align = st["align"]
     if align == "left":
@@ -471,6 +505,27 @@ def render_caption_plate_png(
 
     ox = max(0, min(video_w - plate_w, ox))
     oy = max(0, min(video_h - plate_h, oy))
+    return img, ox, oy, lines
+
+
+def render_caption_plate_png(
+    text: str,
+    style: dict[str, Any] | None,
+    *,
+    video_w: int,
+    video_h: int,
+    out_path: Path,
+) -> tuple[Path, int, int]:
+    """
+    Render one caption plate PNG to disk.
+
+    Returns (path, overlay_x, overlay_y) in full video pixels.
+    """
+    img, ox, oy, _lines = render_caption_plate_image(
+        text, style, video_w=video_w, video_h=video_h
+    )
+    out_path = Path(out_path)
+    img.save(out_path, "PNG")
     return out_path, ox, oy
 
 

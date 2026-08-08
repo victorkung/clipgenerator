@@ -1,4 +1,11 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import {
+  useCallback,
+  useEffect,
+  useLayoutEffect,
+  useMemo,
+  useRef,
+  useState,
+} from "react";
 import { api, formatTs } from "./api";
 
 const DEFAULT_STAGES = [
@@ -78,21 +85,6 @@ function saveCaptionStyle(style) {
   } catch {
     /* ignore */
   }
-}
-
-/** Y position as fraction of frame (matches backend ASS layout). */
-function captionAnchorY(style) {
-  const base = {
-    top: 0.1,
-    middle: 0.5,
-    lower_third: 0.72,
-    bottom: 0.88,
-  }[style.anchor || "bottom"];
-  return Math.max(0.06, Math.min(0.94, base + (Number(style.offset_y) || 0)));
-}
-
-function captionAnchorX(style) {
-  return { left: 0.12, center: 0.5, right: 0.88 }[style.align || "center"];
 }
 
 /** Default summary-agent prompt (shared across all sources; editable). */
@@ -216,28 +208,6 @@ function shortExportPath(path) {
   return s;
 }
 
-/** Ensure @handles appear as the last line of post text (blank line above). */
-function postWithHandles(postText, tags) {
-  const handleLine = (tags || []).filter(Boolean).join(" ").trim();
-  const body = postText || "";
-  if (!handleLine) return body;
-  const trimmed = body.replace(/\s+$/, "");
-  if (trimmed.endsWith(handleLine)) return body;
-  // Avoid duplicating if handles already appear at the end after whitespace
-  const lines = trimmed.split("\n");
-  const last = (lines[lines.length - 1] || "").trim();
-  if (last === handleLine) return body;
-  if (!trimmed) return handleLine;
-  return `${trimmed}\n\n${handleLine}`;
-}
-
-function statusRank(status) {
-  if (status === "ready") return 0;
-  if (status === "error") return 2;
-  if (["pending", "downloading", "transcribing", "queued"].includes(status)) return 1;
-  return 3;
-}
-
 function CutMarkSvg() {
   return (
     <svg
@@ -260,6 +230,14 @@ function CutMarkSvg() {
 }
 
 
+/** Strip trailing "14%" / "· 14%" so we never show percent twice. */
+function stripTrailingPercent(msg) {
+  return String(msg || "")
+    .replace(/(?:\s*[·•.…]?\s*)\d{1,3}\s*%\s*$/g, "")
+    .replace(/\s+\d{1,3}\s*%\s*$/g, "")
+    .trim();
+}
+
 function JobStatus({
   busy,
   message,
@@ -276,6 +254,9 @@ function JobStatus({
   const tone =
     variant ||
     (busy ? "busy" : "done");
+  // One percent only — prefer the numeric `percent` prop; scrub any % already in message.
+  const cleanMsg = stripTrailingPercent(message);
+  const showPct = busy && percent != null && Number.isFinite(percent);
   return (
     <div
       className={`job-status job-status--${tone}`}
@@ -302,10 +283,10 @@ function JobStatus({
           {busy && <span className="banner__spinner" />}
           <span>
             {busy
-              ? message || "Working…"
+              ? cleanMsg || "Working…"
               : title || (tone === "error" ? "Export failed" : "Export success")}
-            {busy && percent != null && (
-              <span className="banner__pct"> · {percent}%</span>
+            {showPct && (
+              <span className="banner__pct"> · {Math.round(percent)}%</span>
             )}
           </span>
         </div>
@@ -480,6 +461,10 @@ export default function App() {
   const [outDraft, setOutDraft] = useState("");
   const [titleDraft, setTitleDraft] = useState("");
   const [editingTitle, setEditingTitle] = useState(false);
+  /** Local draft so poll/reload can't wipe mid-edit (same idea as source titleDraft). */
+  const [clipTitleDraft, setClipTitleDraft] = useState("");
+  /** Local draft for the post textarea — saved on blur / clip switch. */
+  const [postDraft, setPostDraft] = useState("");
   const [summaryPromptDraft, setSummaryPromptDraft] = useState(() =>
     loadSharedPrompt(LS_SUMMARY_PROMPT, DEFAULT_SUMMARY_PROMPT)
   );
@@ -498,18 +483,48 @@ export default function App() {
   const [retryBusy, setRetryBusy] = useState(false);
   const [copyFlash, setCopyFlash] = useState(null);
   const videoRef = useRef(null);
+  const monitorRef = useRef(null);
   const titleInputRef = useRef(null);
   const planFileRef = useRef(null);
   const selectedIdRef = useRef(selectedId);
   const exportOwnerIdRef = useRef(null);
   const copyTimerRef = useRef(null);
   const promptServerSyncRef = useRef(null);
+  /** Last transcript segment index we scrolled to; used to distinguish jump vs playhead crawl. */
+  const prevSegIndexRef = useRef(-1);
+  /** Next activeSegIndex scroll should pin to top (clip select / explicit jump). */
+  const forceTranscriptJumpRef = useRef(false);
+  const activeClipIdRef = useRef(activeClipId);
+  const editingTitleRef = useRef(editingTitle);
+  const clipTitleFocusedRef = useRef(false);
+  const clipTitleDraftRef = useRef("");
+  /** Last title known saved for the active clip (blur compares against this). */
+  const clipTitleSavedRef = useRef("");
+  const postFocusedRef = useRef(false);
+  const postDraftRef = useRef("");
+  /** Last post_text known saved for the active clip. */
+  const postSavedRef = useRef("");
+  /** sourceId + clipId the draft belongs to (blur/switch commit). */
+  const postOwnerRef = useRef({ sourceId: null, clipId: null, tags: [] });
+  activeClipIdRef.current = activeClipId;
+  editingTitleRef.current = editingTitle;
+  clipTitleDraftRef.current = clipTitleDraft;
+  postDraftRef.current = postDraft;
   const [videoBox, setVideoBox] = useState({
     left: 0,
     top: 0,
     width: 0,
     height: 0,
   });
+  /** Server-rendered plate PNG (same as export) for the active cue. */
+  const [platePreview, setPlatePreview] = useState(null);
+  const platePreviewKeyRef = useRef("");
+  const platePreviewTimerRef = useRef(null);
+  /** Monitor container is fullscreen (video + caption overlay). */
+  const [monitorFullscreen, setMonitorFullscreen] = useState(false);
+  /** Pixel positions for transcript margin in/out/playhead (aligned to line DOM). */
+  const [marginMarks, setMarginMarks] = useState(null);
+  const paperGridRef = useRef(null);
 
   const refreshList = useCallback(async () => {
     const list = await api.listSources();
@@ -517,35 +532,52 @@ export default function App() {
     return list;
   }, []);
 
-  const loadSource = useCallback(
-    async (id) => {
-      if (!id) {
-        setSource(null);
+  const loadSource = useCallback(async (id) => {
+    if (!id) {
+      setSource(null);
+      setTranscript(null);
+      return;
+    }
+    const s = await api.getSource(id);
+    // Preserve in-progress title/post if those fields are focused (reload/poll must not wipe).
+    let next = s;
+    const dirtyId = activeClipIdRef.current;
+    if (
+      dirtyId &&
+      (clipTitleFocusedRef.current || postFocusedRef.current)
+    ) {
+      next = {
+        ...s,
+        clips: (s.clips || []).map((c) => {
+          if (c.id !== dirtyId) return c;
+          const merged = { ...c };
+          if (clipTitleFocusedRef.current) merged.title = clipTitleDraftRef.current;
+          if (postFocusedRef.current) merged.post_text = postDraftRef.current;
+          return merged;
+        }),
+      };
+    }
+    setSource(next);
+    // Refs keep this callback stable so selectedId effect does not re-fetch on clip changes.
+    if (!editingTitleRef.current) setTitleDraft(s.title || "");
+    // Agent prompts are app-wide (localStorage); do not reset per source
+    setSummaryUrlDraft(s.summary_post_url || "");
+    if (s.status === "ready" && s.transcript_json) {
+      try {
+        const t = await api.getTranscript(id);
+        setTranscript(t);
+      } catch {
         setTranscript(null);
-        return;
       }
-      const s = await api.getSource(id);
-      setSource(s);
-      if (!editingTitle) setTitleDraft(s.title || "");
-      // Agent prompts are app-wide (localStorage); do not reset per source
-      setSummaryUrlDraft(s.summary_post_url || "");
-      if (s.status === "ready" && s.transcript_json) {
-        try {
-          const t = await api.getTranscript(id);
-          setTranscript(t);
-        } catch {
-          setTranscript(null);
-        }
-      } else {
-        setTranscript(null);
-      }
-      const clips = s.clips || [];
-      if (clips.length && !clips.find((c) => c.id === activeClipId)) {
-        setActiveClipId(clips[0].id);
-      }
-    },
-    [activeClipId, editingTitle]
-  );
+    } else {
+      setTranscript(null);
+    }
+    const clips = s.clips || [];
+    const curClip = activeClipIdRef.current;
+    if (clips.length && !clips.find((c) => c.id === curClip)) {
+      setActiveClipId(clips[0].id);
+    }
+  }, []);
 
   // Keep agent prompts on this device: write localStorage on every edit (survives reload).
   useEffect(() => {
@@ -592,16 +624,99 @@ export default function App() {
     });
   }, []);
 
+  function getFullscreenElement() {
+    return (
+      document.fullscreenElement ||
+      document.webkitFullscreenElement ||
+      null
+    );
+  }
+
+  async function requestElFullscreen(el) {
+    if (!el) return;
+    if (el.requestFullscreen) return el.requestFullscreen();
+    if (el.webkitRequestFullscreen) return el.webkitRequestFullscreen();
+  }
+
+  async function exitDocumentFullscreen() {
+    if (document.exitFullscreen) return document.exitFullscreen();
+    if (document.webkitExitFullscreen) return document.webkitExitFullscreen();
+  }
+
+  async function toggleMonitorFullscreen() {
+    const mon = monitorRef.current;
+    if (!mon) return;
+    try {
+      const fs = getFullscreenElement();
+      if (fs === mon) {
+        await exitDocumentFullscreen();
+      } else {
+        // If video (or anything else) is fullscreen, drop it first
+        if (fs) await exitDocumentFullscreen();
+        await requestElFullscreen(mon);
+      }
+    } catch {
+      /* user gesture / browser policy */
+    }
+    // Layout after FS chrome settles
+    requestAnimationFrame(() => {
+      measureVideoBox();
+      requestAnimationFrame(measureVideoBox);
+    });
+  }
+
   useEffect(() => {
     measureVideoBox();
     const v = videoRef.current;
+    const mon = monitorRef.current;
     if (!v) return undefined;
     const onMeta = () => measureVideoBox();
+    const remesureSoon = () => {
+      requestAnimationFrame(() => {
+        measureVideoBox();
+        requestAnimationFrame(measureVideoBox);
+      });
+    };
+
+    /**
+     * Native video controls fullscreen only the <video>. Promote to the
+     * whole .monitor so the caption plate overlay stays visible.
+     */
+    let promoting = false;
+    const onFsChange = async () => {
+      const fs = getFullscreenElement();
+      setMonitorFullscreen(!!(mon && fs === mon));
+      if (mon && fs === v && !promoting) {
+        promoting = true;
+        try {
+          await exitDocumentFullscreen();
+          await requestElFullscreen(mon);
+        } catch {
+          /* ignore */
+        } finally {
+          promoting = false;
+        }
+      }
+      remesureSoon();
+    };
+
     v.addEventListener("loadedmetadata", onMeta);
     window.addEventListener("resize", measureVideoBox);
+    document.addEventListener("fullscreenchange", onFsChange);
+    document.addEventListener("webkitfullscreenchange", onFsChange);
+
+    let ro;
+    if (mon && typeof ResizeObserver !== "undefined") {
+      ro = new ResizeObserver(() => measureVideoBox());
+      ro.observe(mon);
+    }
+
     return () => {
       v.removeEventListener("loadedmetadata", onMeta);
       window.removeEventListener("resize", measureVideoBox);
+      document.removeEventListener("fullscreenchange", onFsChange);
+      document.removeEventListener("webkitfullscreenchange", onFsChange);
+      if (ro) ro.disconnect();
     };
   }, [measureVideoBox, source?.id, source?.video_path, source?.status]);
 
@@ -734,35 +849,37 @@ export default function App() {
     setOutDraft(formatTs(activeClip.t_out));
   }, [activeClip?.id, activeClip?.t_in, activeClip?.t_out]);
 
+  // Keep clip title draft in sync with server/active clip, but not while the field is focused.
+  useEffect(() => {
+    if (clipTitleFocusedRef.current) return;
+    const t = activeClip?.title || "";
+    setClipTitleDraft(t);
+    clipTitleSavedRef.current = t;
+  }, [activeClip?.id, activeClip?.title]);
+
+  // Keep post draft in sync when not focused. Track owner for reliable blur save.
+  useEffect(() => {
+    postOwnerRef.current = {
+      sourceId: source?.id || null,
+      clipId: activeClip?.id || null,
+      tags: activeClip?.tags || [],
+    };
+    if (postFocusedRef.current) return;
+    const t = activeClip?.post_text || "";
+    setPostDraft(t);
+    postSavedRef.current = t;
+  }, [source?.id, activeClip?.id, activeClip?.post_text, activeClip?.tags]);
+
   useEffect(() => {
     if (editingTitle && titleInputRef.current) titleInputRef.current.focus();
   }, [editingTitle]);
 
-  // Append @handles as last line of post text when switching clips (if missing)
-  useEffect(() => {
-    if (!activeClip) return;
-    const tags = activeClip.tags || [];
-    if (!tags.length) return;
-    const next = postWithHandles(activeClip.post_text || "", tags);
-    if (next === (activeClip.post_text || "")) return;
-    setSource((prev) => {
-      if (!prev || !activeClipId) return prev;
-      return {
-        ...prev,
-        clips: (prev.clips || []).map((c) =>
-          c.id === activeClipId ? { ...c, post_text: next } : c
-        ),
-      };
-    });
-  }, [activeClipId]);
-
+  // Newest ingest first (created_at), regardless of ready vs downloading.
   const sortedSources = useMemo(() => {
     return [...sources].sort((a, b) => {
-      const r = statusRank(a.status) - statusRank(b.status);
-      if (r !== 0) return r;
-      return String(b.updated_at || b.created_at || "").localeCompare(
-        String(a.updated_at || a.created_at || "")
-      );
+      const ta = String(a.created_at || a.updated_at || "");
+      const tb = String(b.created_at || b.updated_at || "");
+      return tb.localeCompare(ta);
     });
   }, [sources]);
 
@@ -782,10 +899,193 @@ export default function App() {
     return best;
   }, [segments, currentTime]);
 
+  /**
+   * Place margin in/out/playhead from real transcript line boxes.
+   * Time-linear % was wrong: segments have unequal duration and line height.
+   */
+  useLayoutEffect(() => {
+    const grid = paperGridRef.current;
+    if (!grid || !activeClip || !segments.length) {
+      setMarginMarks(null);
+      return undefined;
+    }
+
+    const relY = (el, edge = "top") => {
+      const gr = grid.getBoundingClientRect();
+      const er = el.getBoundingClientRect();
+      return edge === "bottom" ? er.bottom - gr.top : er.top - gr.top;
+    };
+
+    const measure = () => {
+      let firstIn = -1;
+      let lastIn = -1;
+      for (let i = 0; i < segments.length; i++) {
+        const seg = segments[i];
+        const end = seg.end ?? seg.start + 0.01;
+        if (seg.start < activeClip.t_out && end > activeClip.t_in) {
+          if (firstIn < 0) firstIn = i;
+          lastIn = i;
+        }
+      }
+
+      // No overlap (empty range) — pin to nearest lines by t_in / t_out
+      if (firstIn < 0) {
+        for (let i = 0; i < segments.length; i++) {
+          if (segments[i].start >= activeClip.t_in) {
+            firstIn = i;
+            break;
+          }
+          firstIn = i;
+        }
+        lastIn = firstIn;
+        for (let i = segments.length - 1; i >= 0; i--) {
+          if ((segments[i].end ?? segments[i].start) <= activeClip.t_out) {
+            lastIn = i;
+            break;
+          }
+        }
+        if (lastIn < firstIn) lastIn = firstIn;
+      }
+
+      const firstEl = document.getElementById(`seg-${firstIn}`);
+      const lastEl = document.getElementById(`seg-${lastIn}`);
+      if (!firstEl || !lastEl) {
+        setMarginMarks(null);
+        return;
+      }
+
+      const inTop = relY(firstEl, "top");
+      const outBot = relY(lastEl, "bottom");
+      let phTop = inTop + 4;
+      if (activeSegIndex >= 0) {
+        const phEl = document.getElementById(`seg-${activeSegIndex}`);
+        if (phEl) {
+          phTop = relY(phEl, "top") + phEl.getBoundingClientRect().height * 0.35;
+        }
+      }
+
+      setMarginMarks({
+        inTop,
+        outTop: outBot - 2,
+        height: Math.max(2, outBot - inTop),
+        phTop,
+      });
+    };
+
+    measure();
+    const ro =
+      typeof ResizeObserver !== "undefined"
+        ? new ResizeObserver(() => measure())
+        : null;
+    if (ro) ro.observe(grid);
+    window.addEventListener("resize", measure);
+    return () => {
+      if (ro) ro.disconnect();
+      window.removeEventListener("resize", measure);
+    };
+  }, [
+    activeClip?.id,
+    activeClip?.t_in,
+    activeClip?.t_out,
+    segments,
+    activeSegIndex,
+    source?.id,
+  ]);
+
+  // New source → next scroll is always a "jump" (pin near top).
+  // Do not key on transcript object identity — loadSource polls and re-sets it.
   useEffect(() => {
-    if (activeSegIndex < 0) return;
+    prevSegIndexRef.current = -1;
+  }, [selectedId]);
+
+  function findSegIndexAtTime(t) {
+    if (!segments.length) return -1;
+    const exact = segments.findIndex(
+      (s) => t >= s.start && t < (s.end || s.start + 0.01)
+    );
+    if (exact >= 0) return exact;
+    let best = -1;
+    for (let i = 0; i < segments.length; i++) {
+      if (segments[i].start <= t) best = i;
+      else break;
+    }
+    return best;
+  }
+
+  /** Pin a transcript line near the top of the paper body. */
+  function scrollTranscriptToSegIndex(idx, behavior = "smooth") {
+    if (idx < 0) return;
+    const el = document.getElementById(`seg-${idx}`);
+    if (!el) return;
+    prevSegIndexRef.current = idx;
+    const container = el.closest(".paper__body");
+    if (container) {
+      const pad = 12;
+      const top =
+        el.getBoundingClientRect().top -
+        container.getBoundingClientRect().top +
+        container.scrollTop -
+        pad;
+      container.scrollTo({ top: Math.max(0, top), behavior });
+      return;
+    }
+    el.scrollIntoView({ block: "start", behavior });
+  }
+
+  /**
+   * Sidebar clip select: seek player to t_in, show Transcript, scroll to clip start.
+   * Works even if the clip is already active / video is playing mid-range.
+   */
+  function selectClip(c) {
+    if (!c) return;
+    flushPostIfDirty();
+    setActiveClipId(c.id);
+    seekTo(c.t_in);
+    forceTranscriptJumpRef.current = true;
+    setPaneTab("transcript");
+    // Wait for tab/transcript DOM, then pin the in-line at the top.
+    requestAnimationFrame(() => {
+      requestAnimationFrame(() => {
+        const idx = findSegIndexAtTime(c.t_in);
+        scrollTranscriptToSegIndex(idx);
+        forceTranscriptJumpRef.current = false;
+      });
+    });
+  }
+
+  useEffect(() => {
+    if (activeSegIndex < 0) {
+      prevSegIndexRef.current = -1;
+      return;
+    }
     const el = document.getElementById(`seg-${activeSegIndex}`);
-    if (el) el.scrollIntoView({ block: "nearest", behavior: "smooth" });
+    if (!el) return;
+
+    const prev = prevSegIndexRef.current;
+    prevSegIndexRef.current = activeSegIndex;
+    // Clip click / Apply / big seek → pin line near top. Adjacent playhead steps → nudge only.
+    const jumped =
+      forceTranscriptJumpRef.current ||
+      prev < 0 ||
+      Math.abs(activeSegIndex - prev) > 1;
+
+    if (jumped) {
+      const container = el.closest(".paper__body");
+      if (container) {
+        const pad = 12;
+        const top =
+          el.getBoundingClientRect().top -
+          container.getBoundingClientRect().top +
+          container.scrollTop -
+          pad;
+        container.scrollTo({ top: Math.max(0, top), behavior: "smooth" });
+        return;
+      }
+      el.scrollIntoView({ block: "start", behavior: "smooth" });
+      return;
+    }
+
+    el.scrollIntoView({ block: "nearest", behavior: "smooth" });
   }, [activeSegIndex]);
 
   async function onIngest(e) {
@@ -874,12 +1174,118 @@ export default function App() {
   async function saveClipPatch(patch) {
     if (!source || !activeClip) return;
     try {
-      await api.updateClip(source.id, activeClip.id, patch);
-      await loadSource(source.id);
+      const updated = await api.updateClip(source.id, activeClip.id, patch);
+      // Merge the patched clip instead of full loadSource — avoids wiping other
+      // in-progress local edits (clip title draft, post text, captions).
+      setSource((prev) => {
+        if (!prev) return prev;
+        return {
+          ...prev,
+          clips: (prev.clips || []).map((c) => {
+            if (c.id !== updated.id) return c;
+            const merged = { ...c, ...updated };
+            // Keep in-progress fields if focused (server may be stale).
+            if (c.id === activeClipIdRef.current) {
+              if (clipTitleFocusedRef.current) {
+                merged.title = clipTitleDraftRef.current;
+              }
+              if (postFocusedRef.current) {
+                merged.post_text = postDraftRef.current;
+              }
+            }
+            return merged;
+          }),
+        };
+      });
+      if (typeof patch.title === "string" && !clipTitleFocusedRef.current) {
+        setClipTitleDraft(updated.title || "");
+        clipTitleSavedRef.current = updated.title || "";
+      }
+      if (typeof patch.post_text === "string" && !postFocusedRef.current) {
+        setPostDraft(updated.post_text || "");
+        postSavedRef.current = updated.post_text || "";
+      }
       await refreshList();
     } catch (err) {
       setError(String(err.message || err));
     }
+  }
+
+  async function commitClipTitle() {
+    if (!source || !activeClip) return;
+    const next = clipTitleDraft;
+    // Compare to last *saved* title, not live source (we optimistically update source while typing).
+    if (next === clipTitleSavedRef.current) return;
+    try {
+      const updated = await api.updateClip(source.id, activeClip.id, {
+        title: next,
+      });
+      clipTitleSavedRef.current = updated.title || next;
+      setClipTitleDraft(updated.title || next);
+      setSource((prev) => {
+        if (!prev) return prev;
+        return {
+          ...prev,
+          clips: (prev.clips || []).map((c) =>
+            c.id === updated.id ? { ...c, ...updated } : c
+          ),
+        };
+      });
+      await refreshList();
+    } catch (err) {
+      setError(String(err.message || err));
+    }
+  }
+
+  /**
+   * Persist post_text for the draft's owner clip.
+   * Uses refs so blur still saves correctly if React state has already switched clips.
+   */
+  async function commitPostText(rawText) {
+    const owner = postOwnerRef.current;
+    if (!owner.sourceId || !owner.clipId) return;
+    // Save exactly what the user wrote — do not append @handles.
+    const next = rawText != null ? String(rawText) : postDraftRef.current;
+    if (next === postSavedRef.current) return;
+    try {
+      const updated = await api.updateClip(owner.sourceId, owner.clipId, {
+        post_text: next,
+      });
+      postSavedRef.current = updated.post_text ?? next;
+      // Only write draft back if still on the same clip
+      if (activeClipIdRef.current === owner.clipId) {
+        setPostDraft(postSavedRef.current);
+      }
+      setSource((prev) => {
+        if (!prev || prev.id !== owner.sourceId) return prev;
+        return {
+          ...prev,
+          clips: (prev.clips || []).map((c) => {
+            if (c.id !== owner.clipId) return c;
+            const merged = { ...c, ...updated };
+            // Don't clobber a different field still being edited
+            if (
+              clipTitleFocusedRef.current &&
+              c.id === activeClipIdRef.current
+            ) {
+              merged.title = clipTitleDraftRef.current;
+            }
+            return merged;
+          }),
+        };
+      });
+    } catch (err) {
+      setError(String(err.message || err));
+    }
+  }
+
+  /** Fire-and-forget save before navigation if the post field has unsaved edits. */
+  function flushPostIfDirty() {
+    postFocusedRef.current = false;
+    const owner = postOwnerRef.current;
+    if (!owner.sourceId || !owner.clipId) return;
+    if (postDraftRef.current === postSavedRef.current) return;
+    void commitPostText(postDraftRef.current);
   }
 
   async function addClip() {
@@ -1171,6 +1577,20 @@ export default function App() {
     setExportStatusOpen(true);
     setExportMsg(label || "Starting export…");
     try {
+      // Flush caption text edits so burn-in matches the monitor preview.
+      const clipsToFlush = (source.clips || []).filter((c) => {
+        if (!clipIds) return true;
+        return clipIds.includes(c.id);
+      });
+      for (const c of clipsToFlush) {
+        if (!(c.captions || []).length) continue;
+        try {
+          await api.saveCaptions(ownerId, c.id, c.captions || []);
+        } catch {
+          /* best-effort; export still uses library state */
+        }
+      }
+
       const started = await api.exportClips(ownerId, clipIds, {
         captionStyle,
         burnCaptions: true, // burn whenever cues exist
@@ -1183,8 +1603,11 @@ export default function App() {
         await new Promise((r) => setTimeout(r, 400));
         job = await api.getExportJob(jobId);
         if (onOwner()) {
-          if (typeof job.percent === "number") setExportPercent(job.percent);
-          if (job.message) setExportMsg(job.message);
+          // Trust job.percent (0→99 while running). Do not freeze a bad early 99%.
+          if (typeof job.percent === "number") {
+            setExportPercent(Math.max(0, Math.min(100, job.percent)));
+          }
+          if (job.message) setExportMsg(stripTrailingPercent(job.message));
         }
         if (job.status === "done" || job.status === "error") break;
       }
@@ -1435,6 +1858,59 @@ export default function App() {
     );
   }, [activeClip, clipCaptions, clipRelTime, inRange]);
 
+  // Monitor caption = identical Pillow PNG as export (not browser text metrics).
+  useEffect(() => {
+    const text = (activeCaption?.text || "").trim();
+    const vw = videoRef.current?.videoWidth || 0;
+    const vh = videoRef.current?.videoHeight || 0;
+    if (!text || !vw || !vh) {
+      setPlatePreview(null);
+      platePreviewKeyRef.current = "";
+      return undefined;
+    }
+    const key = JSON.stringify({
+      text,
+      style: captionStyle,
+      vw,
+      vh,
+    });
+    if (key === platePreviewKeyRef.current && platePreview) {
+      return undefined;
+    }
+    if (platePreviewTimerRef.current) clearTimeout(platePreviewTimerRef.current);
+    let cancelled = false;
+    platePreviewTimerRef.current = setTimeout(() => {
+      api
+        .captionPlatePreview({
+          text,
+          caption_style: captionStyle,
+          video_w: vw,
+          video_h: vh,
+        })
+        .then((res) => {
+          if (cancelled) return;
+          platePreviewKeyRef.current = key;
+          setPlatePreview(res);
+        })
+        .catch(() => {
+          if (!cancelled) setPlatePreview(null);
+        });
+    }, 60);
+    return () => {
+      cancelled = true;
+      if (platePreviewTimerRef.current) clearTimeout(platePreviewTimerRef.current);
+    };
+    // platePreview intentionally omitted — we only re-fetch when inputs change
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [
+    activeCaption?.id,
+    activeCaption?.text,
+    captionStyle,
+    source?.id,
+    videoBox.width,
+    videoBox.height,
+  ]);
+
   const summaryUrlDone = !!(summaryUrlDraft.trim() || source?.summary_post_url);
   const planDone = !!(source?.clips || []).some((c) => c.from_plan);
   const canRetryTranscribe =
@@ -1561,6 +2037,7 @@ export default function App() {
                   key={s.id}
                   className={`list-item ${s.id === selectedId ? "list-item--active" : ""}`}
                   onClick={() => {
+                    flushPostIfDirty();
                     setEditingTitle(false);
                     setSelectedId(s.id);
                   }}
@@ -1631,45 +2108,48 @@ export default function App() {
                           className={`clip-card ${
                             c.id === activeClipId ? "clip-card--active" : ""
                           }`}
-                          onClick={() => {
-                            setActiveClipId(c.id);
-                            seekTo(c.t_in);
-                          }}
+                          onClick={() => selectClip(c)}
                           role="button"
                           tabIndex={0}
                           onKeyDown={(e) => {
                             if (e.key === "Enter" || e.key === " ") {
                               e.preventDefault();
-                              setActiveClipId(c.id);
-                              seekTo(c.t_in);
+                              selectClip(c);
                             }
                           }}
                         >
                           <div className="clip-card__top">
                             <span className="clip-card__title">{c.title}</span>
-                            <span className={statusWordClass(st)}>{st}</span>
                           </div>
-                          <div className="clip-card__range">
-                            {formatTs(c.t_in)} – {formatTs(c.t_out)} ·{" "}
-                            {Math.max(0, (c.t_out || 0) - (c.t_in || 0)).toFixed(
-                              1
-                            )}
-                            s
+                          <div className="clip-card__meta">
+                            <span className="clip-card__range">
+                              {formatTs(c.t_in)} – {formatTs(c.t_out)}
+                            </span>
+                            <span className="sep">·</span>
+                            <span className="clip-card__range">
+                              {Math.max(
+                                0,
+                                (c.t_out || 0) - (c.t_in || 0)
+                              ).toFixed(1)}
+                              s
+                            </span>
+                            <span className="sep">·</span>
+                            <span className={statusWordClass(st)}>{st}</span>
+                            <button
+                              type="button"
+                              className="btn btn--icon btn--danger list-item__remove"
+                              title="Delete clip"
+                              onClick={(e) => {
+                                e.stopPropagation();
+                                removeClip(c.id);
+                              }}
+                            >
+                              ×
+                            </button>
                           </div>
                           {showWhyOnCards && c.why && (
                             <p className="clip-card__why">why · {c.why}</p>
                           )}
-                          <button
-                            type="button"
-                            className="btn btn--icon btn--danger"
-                            title="Delete clip"
-                            onClick={(e) => {
-                              e.stopPropagation();
-                              removeClip(c.id);
-                            }}
-                          >
-                            ×
-                          </button>
                         </div>
                       </li>
                     );
@@ -1905,7 +2385,10 @@ export default function App() {
                       className={`pane-tab ${
                         paneTab === "transcript" ? "pane-tab--active" : ""
                       }`}
-                      onClick={() => setPaneTab("transcript")}
+                      onClick={() => {
+                        flushPostIfDirty();
+                        setPaneTab("transcript");
+                      }}
                     >
                       Transcript
                     </button>
@@ -1916,7 +2399,10 @@ export default function App() {
                       className={`pane-tab ${
                         paneTab === "captions" ? "pane-tab--active" : ""
                       }`}
-                      onClick={() => setPaneTab("captions")}
+                      onClick={() => {
+                        flushPostIfDirty();
+                        setPaneTab("captions");
+                      }}
                     >
                       Captions
                     </button>
@@ -1939,7 +2425,10 @@ export default function App() {
                         className={`pane-tab pane-tab--agent ${
                           paneTab === "agent" ? "pane-tab--active" : ""
                         }`}
-                        onClick={() => setPaneTab("agent")}
+                        onClick={() => {
+                          flushPostIfDirty();
+                          setPaneTab("agent");
+                        }}
                       >
                         Agent handoff
                       </button>
@@ -2236,10 +2725,15 @@ export default function App() {
                               <textarea
                                 className="input paper-input"
                                 rows={10}
-                                value={activeClip.post_text || ""}
+                                value={postDraft}
                                 placeholder="Write or edit the X quote body…"
+                                onFocus={() => {
+                                  postFocusedRef.current = true;
+                                }}
                                 onChange={(e) => {
                                   const t = e.target.value;
+                                  setPostDraft(t);
+                                  // Live-update local clip so counts / hasPost stay current
                                   setSource((prev) => {
                                     if (!prev || !activeClipId) return prev;
                                     return {
@@ -2252,32 +2746,10 @@ export default function App() {
                                     };
                                   });
                                 }}
-                                onBlur={async (e) => {
-                                  if (!source || !activeClip) return;
-                                  const next = postWithHandles(
-                                    e.target.value,
-                                    activeClip.tags || []
-                                  );
-                                  try {
-                                    await api.updateClip(source.id, activeClip.id, {
-                                      post_text: next,
-                                    });
-                                    if (next !== e.target.value) {
-                                      setSource((prev) => {
-                                        if (!prev || !activeClipId) return prev;
-                                        return {
-                                          ...prev,
-                                          clips: (prev.clips || []).map((c) =>
-                                            c.id === activeClipId
-                                              ? { ...c, post_text: next }
-                                              : c
-                                          ),
-                                        };
-                                      });
-                                    }
-                                  } catch (err) {
-                                    setError(String(err.message || err));
-                                  }
+                                onBlur={(e) => {
+                                  postFocusedRef.current = false;
+                                  // Autosave whenever the post field loses focus
+                                  commitPostText(e.target.value);
                                 }}
                                 spellCheck
                               />
@@ -2285,15 +2757,9 @@ export default function App() {
                                 <button
                                   type="button"
                                   className="btn btn--primary btn--sm"
-                                  disabled={!(activeClip.post_text || "").trim()}
+                                  disabled={!postDraft.trim()}
                                   onClick={() =>
-                                    copyText(
-                                      postWithHandles(
-                                        activeClip.post_text || "",
-                                        activeClip.tags || []
-                                      ),
-                                      "post"
-                                    )
+                                    copyText(postDraft, "post")
                                   }
                                 >
                                   {copyFlash === "post" ? "Copied" : "Copy post"}
@@ -2441,7 +2907,7 @@ export default function App() {
                               <div className="caption-editor__footer">
                                 <button
                                   type="button"
-                                  className="btn btn--primary btn--sm"
+                                  className="btn btn--paper btn--sm"
                                   onClick={generateCaptions}
                                   disabled={captionsBusy}
                                 >
@@ -2451,10 +2917,17 @@ export default function App() {
                                 </button>
                                 <button
                                   type="button"
-                                  className="btn btn--paper"
-                                  onClick={persistCaptions}
+                                  className="btn btn--primary btn--sm"
+                                  onClick={async () => {
+                                    try {
+                                      await persistCaptions();
+                                      setCaptionsMsg("Caption changes applied");
+                                    } catch (err) {
+                                      setError(String(err.message || err));
+                                    }
+                                  }}
                                 >
-                                  Save captions
+                                  Apply changes
                                 </button>
                                 <p className="caption-note">
                                   Export burns the plate + writes .srt · style in
@@ -2469,74 +2942,45 @@ export default function App() {
                       <>
                         <div className="paper">
                           <div className="paper__body paper__body--measure">
-                            <div className="paper__grid">
+                            <div className="paper__grid" ref={paperGridRef}>
                               <div className="paper__margin" aria-hidden>
-                                {activeClip &&
-                                  segments.length > 0 &&
-                                  (() => {
-                                    const first = segments[0]?.start ?? 0;
-                                    const last =
-                                      segments[segments.length - 1]?.end ??
-                                      (sourceDuration || 1);
-                                    const span = Math.max(0.001, last - first);
-                                    const topPct = Math.min(
-                                      100,
-                                      Math.max(
-                                        0,
-                                        ((activeClip.t_in - first) / span) * 100
-                                      )
-                                    );
-                                    const botPct = Math.min(
-                                      100,
-                                      Math.max(
-                                        0,
-                                        ((activeClip.t_out - first) / span) * 100
-                                      )
-                                    );
-                                    const phPct = Math.min(
-                                      100,
-                                      Math.max(
-                                        0,
-                                        ((currentTime - first) / span) * 100
-                                      )
-                                    );
-                                    const h = Math.max(0, botPct - topPct);
-                                    return (
-                                      <>
-                                        <div
-                                          className="paper__margin-rule"
-                                          style={{
-                                            top: `${topPct}%`,
-                                            height: `${h}%`,
-                                          }}
-                                        />
-                                        <div
-                                          className="paper__margin-cap"
-                                          style={{ top: `${topPct}%` }}
-                                        />
-                                        <div
-                                          className="paper__margin-cap"
-                                          style={{ top: `calc(${botPct}% - 2px)` }}
-                                        />
-                                        <span
-                                          className="paper__margin-label"
-                                          style={{ top: `calc(${topPct}% - 12px)` }}
-                                        >
-                                          in
-                                        </span>
-                                        <span
-                                          className="paper__margin-label"
-                                          style={{ top: `calc(${botPct}% + 4px)` }}
-                                        >
-                                          out
-                                        </span>
-                                        <div
-                                          className="paper__margin-playhead"
-                                          style={{ top: `${phPct}%` }}
-                                        />
-                                      </>
-                                    );
-                                  })()}
+                                {activeClip && marginMarks && (
+                                  <>
+                                    <div
+                                      className="paper__margin-rule"
+                                      style={{
+                                        top: marginMarks.inTop,
+                                        height: marginMarks.height,
+                                      }}
+                                    />
+                                    <div
+                                      className="paper__margin-cap"
+                                      style={{ top: marginMarks.inTop }}
+                                    />
+                                    <div
+                                      className="paper__margin-cap"
+                                      style={{ top: marginMarks.outTop }}
+                                    />
+                                    <span
+                                      className="paper__margin-label"
+                                      style={{
+                                        top: Math.max(0, marginMarks.inTop - 12),
+                                      }}
+                                    >
+                                      in
+                                    </span>
+                                    <span
+                                      className="paper__margin-label"
+                                      style={{ top: marginMarks.outTop + 4 }}
+                                    >
+                                      out
+                                    </span>
+                                    <div
+                                      className="paper__margin-playhead"
+                                      style={{ top: marginMarks.phTop }}
+                                    />
+                                  </>
+                                )}
                               </div>
                               <div className="paper__text">
                                 {segments.map((seg, i) => {
@@ -2598,14 +3042,19 @@ export default function App() {
         {source && source.status === "ready" && mediaSrc && (
           <aside className="craft-col">
             <div className="craft-col__scroll">
-              <div className="monitor">
+              <div
+                ref={monitorRef}
+                className={`monitor ${
+                  monitorFullscreen ? "monitor--fullscreen" : ""
+                }`}
+              >
                 <video
                   ref={videoRef}
                   src={mediaSrc}
                   controls
                   onTimeUpdate={(e) => setCurrentTime(e.target.currentTime)}
                 />
-                {activeCaption?.text && videoBox.width > 0 ? (
+                {platePreview?.png_base64 && videoBox.width > 0 ? (
                   <div
                     className="caption-overlay"
                     aria-hidden
@@ -2616,27 +3065,27 @@ export default function App() {
                       height: videoBox.height,
                     }}
                   >
-                    <div
-                      className={[
-                        "caption-overlay__plate",
-                        `caption-overlay__plate--${captionStyle.font === "sans" ? "sans" : "serif"}`,
-                        `caption-overlay__plate--${captionStyle.plate === "night" ? "night" : "cream"}`,
-                        `caption-overlay__plate--align-${captionStyle.align || "center"}`,
-                      ].join(" ")}
+                    {/* Exact export plate (Pillow) — scale full-frame coords into letterbox */}
+                    <img
+                      className="caption-overlay__img"
+                      alt=""
+                      draggable={false}
+                      src={`data:image/png;base64,${platePreview.png_base64}`}
                       style={{
-                        left: `${captionAnchorX(captionStyle) * 100}%`,
-                        top: `${captionAnchorY(captionStyle) * 100}%`,
-                        maxWidth: `${(captionStyle.max_width || 0.86) * 100}%`,
-                        fontSize: Math.max(
-                          11,
-                          Math.round(
-                            (captionStyle.font_size || 0.052) * videoBox.height
-                          )
-                        ),
+                        left:
+                          (platePreview.x / platePreview.video_w) *
+                          videoBox.width,
+                        top:
+                          (platePreview.y / platePreview.video_h) *
+                          videoBox.height,
+                        width:
+                          (platePreview.plate_w / platePreview.video_w) *
+                          videoBox.width,
+                        height:
+                          (platePreview.plate_h / platePreview.video_h) *
+                          videoBox.height,
                       }}
-                    >
-                      {activeCaption.text}
-                    </div>
+                    />
                   </div>
                 ) : null}
                 <div
@@ -2645,6 +3094,19 @@ export default function App() {
                   {formatTs(currentTime)}
                   {inRange ? " · in clip" : ""}
                 </div>
+                <button
+                  type="button"
+                  className="monitor__fs"
+                  onClick={toggleMonitorFullscreen}
+                  title={
+                    monitorFullscreen
+                      ? "Exit fullscreen"
+                      : "Fullscreen with captions"
+                  }
+                  aria-pressed={monitorFullscreen}
+                >
+                  {monitorFullscreen ? "Exit full" : "Fullscreen"}
+                </button>
               </div>
 
               {activeClip && sourceDuration > 0 && (
@@ -2749,18 +3211,34 @@ export default function App() {
                   <span className="field__label">Clip title</span>
                   <input
                     className="input input--serif"
-                    value={activeClip?.title || ""}
-                    onChange={(e) =>
-                      setSource((prev) => ({
-                        ...prev,
-                        clips: (prev.clips || []).map((c) =>
-                          c.id === activeClipId
-                            ? { ...c, title: e.target.value }
-                            : c
-                        ),
-                      }))
-                    }
-                    onBlur={(e) => saveClipPatch({ title: e.target.value })}
+                    value={clipTitleDraft}
+                    onFocus={() => {
+                      clipTitleFocusedRef.current = true;
+                    }}
+                    onChange={(e) => {
+                      const v = e.target.value;
+                      setClipTitleDraft(v);
+                      // Live-update sidebar card while typing
+                      setSource((prev) => {
+                        if (!prev || !activeClipId) return prev;
+                        return {
+                          ...prev,
+                          clips: (prev.clips || []).map((c) =>
+                            c.id === activeClipId ? { ...c, title: v } : c
+                          ),
+                        };
+                      });
+                    }}
+                    onBlur={() => {
+                      clipTitleFocusedRef.current = false;
+                      commitClipTitle();
+                    }}
+                    onKeyDown={(e) => {
+                      if (e.key === "Enter") {
+                        e.preventDefault();
+                        e.currentTarget.blur();
+                      }
+                    }}
                     disabled={!activeClip}
                   />
                 </label>
@@ -2951,6 +3429,31 @@ export default function App() {
                     </label>
                   </div>
                   <label className="field caption-plate-controls__row--full">
+                    <span className="field__label">Size</span>
+                    <div className="caption-plate-controls__nudge">
+                      <input
+                        type="range"
+                        min={30}
+                        max={90}
+                        step={1}
+                        value={Math.round(
+                          (captionStyle.font_size || 0.052) * 1000
+                        )}
+                        onChange={(e) =>
+                          patchCaptionStyle({
+                            font_size: Number(e.target.value) / 1000,
+                          })
+                        }
+                        aria-valuetext={`${(
+                          (captionStyle.font_size || 0.052) * 100
+                        ).toFixed(1)}% of frame`}
+                      />
+                      <span className="caption-plate-controls__nudge-val">
+                        {((captionStyle.font_size || 0.052) * 100).toFixed(1)}%
+                      </span>
+                    </div>
+                  </label>
+                  <label className="field caption-plate-controls__row--full">
                     <span className="field__label">Nudge vertical</span>
                     <div className="caption-plate-controls__nudge">
                       <input
@@ -2981,25 +3484,51 @@ export default function App() {
                   <button
                     type="button"
                     className="btn"
-                    onClick={generateCaptions}
-                    disabled={!activeClip || captionsBusy}
-                  >
-                    {captionsBusy
-                      ? "Generating…"
-                      : clipCaptions.length
-                        ? "Regenerate captions"
-                        : "Generate captions"}
-                  </button>
-                  <button
-                    type="button"
-                    className="btn"
                     onClick={() => setPaneTab("captions")}
                     disabled={!activeClip}
                   >
-                    Edit text
-                    {clipCaptions.length ? ` (${clipCaptions.length})` : ""}
+                    {clipCaptions.length
+                      ? `Edit text (${clipCaptions.length})`
+                      : "Edit text"}
                   </button>
+                  {clipCaptions.length ? (
+                    <button
+                      type="button"
+                      className="btn btn--primary"
+                      onClick={async () => {
+                        if (!source || !activeClip) return;
+                        try {
+                          await persistCaptions();
+                          setCaptionsMsg("Caption changes applied");
+                        } catch (err) {
+                          setError(String(err.message || err));
+                        }
+                      }}
+                      disabled={!activeClip || captionsBusy}
+                    >
+                      Apply changes
+                    </button>
+                  ) : (
+                    <button
+                      type="button"
+                      className="btn btn--primary"
+                      onClick={generateCaptions}
+                      disabled={!activeClip || captionsBusy}
+                    >
+                      {captionsBusy ? "Generating…" : "Generate captions"}
+                    </button>
+                  )}
                 </div>
+                {clipCaptions.length > 0 && (
+                  <button
+                    type="button"
+                    className="btn btn--ghost clip-caption-actions__regen"
+                    onClick={generateCaptions}
+                    disabled={!activeClip || captionsBusy}
+                  >
+                    {captionsBusy ? "Generating…" : "Regenerate from transcript"}
+                  </button>
+                )}
                 {captionsBusy && (
                   <JobStatus busy message="Generating captions…" />
                 )}
@@ -3045,11 +3574,7 @@ export default function App() {
                     onClick={exportOne}
                     disabled={!activeClip || exportBusy}
                   >
-                    {exportBusy
-                      ? exportPercent != null
-                        ? `Exporting… ${exportPercent}%`
-                        : "Exporting…"
-                      : "Export clip"}
+                    {exportBusy ? "Exporting…" : "Export clip"}
                   </button>
                   <button
                     type="button"

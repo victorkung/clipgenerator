@@ -9,7 +9,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
-- **Clip captions:** generate from source transcript (clip-relative times), edit text in Captions tab; export writes `.srt` sidecar
+- **Caption plate designer + burn-in:** app-wide style (serif/sans, cream/night plate, size, position, align, vertical nudge) saved on-device; export burns plates when cues exist and always writes `.srt`
+- **True WYSIWYG caption preview:** monitor uses the same Pillow PNG renderer as export (`/api/caption-plate-preview`) so wraps and opacity match the file
+- **Monitor fullscreen with captions:** fullscreens the whole monitor (video + plate), not just the `<video>`; video controls fullscreen is promoted to the monitor
+- **Clip captions:** generate from source transcript (clip-relative times), edit text in Captions tab
 - **Pane tabs:** Transcript · Captions · Post · Agent handoff (`CLIPGENERATOR_AGENT_FLOW`, default off; `serve.sh` sets on)
 - **Agent packages:** split `agent-export/summary/` and `agent-export/clip/`; lean X-only clip-plan import; editable post text + shared prompts
 - **Public packaging:** public `prompts/` (pipeline docs + schema); private packs under gitignored `prompts/private/**`; brand assets; README screenshots; MIT `LICENSE`; [docs/PUBLIC_REPO.md](docs/PUBLIC_REPO.md)
@@ -21,21 +24,27 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Import notice** after clip-plan import (persists until dismiss / switch source)
 - Brand cut-mark glyph + **a local clip desk** tagline
 
-### Added
-
-- **Caption plate designer + burn-in:** app-wide style (serif/sans, cream/night plate, position, align, vertical nudge) saved on-device; live monitor preview matches export; export burns plates when cues exist and always writes `.srt` (Pillow PNG overlays + ffmpeg)
-
 ### Changed
 
-- **Craft accordion:** Clip / Caption plate / Export sections collapse independently (all open by default) to reduce sidebar scroll on laptops
-- **Whisper model copy:** small = faster default; medium = clearer when names/jargon/noise fail — actionable, no confusing length cutoffs
+- **Opaque caption plates:** cream/night fills are fully solid in preview and burn-in (no translucent wash)
+- **Export progress:** fix ffmpeg `out_time_ms` unit (no 99% flash); single percent in the status line; preparing-captions stage before encode
+- **Caption craft actions:** primary **Apply changes** (save cues); regenerate is secondary
+- **Post text:** copy/save no longer re-appends `@handles`; handles are baked once on clip-plan import only
+- **Clip title / post drafts:** focus-protected so poll/reload does not wipe mid-edit
+- **Clip select:** seeks to `t_in`, opens Transcript, scrolls the in-line to the top of the paper (works while playing)
+- **Transcript margin in/out:** positioned from real line boxes (not linear time %), so marks match the yellow range wash
+- **Sources sidebar:** newest ingest first (`created_at`), not status-grouped
+- **Clip delete control:** on the meta row like sources (no longer overlapping status)
+- **Transcript scroll:** big seeks pin near top; playhead crawl stays `nearest`
+- **Craft accordion:** Clip / Caption plate / Export sections collapse independently (all open by default)
+- **Whisper model copy:** small = faster default; medium = clearer when names/jargon/noise fail
 - **Post-STT resilience:** heal sources to ready when transcript exists on disk after API restart; ignore transient poll errors during long STT
 - **Honest STT progress:** Whisper no longer fakes “% done” or a precise ETA; shows real elapsed time, indeterminate bar, and a rough wall-time range (download still uses real yt-dlp %)
 - Agent handoff paper fills the center pane (no dark void under short content)
 - Agent prompts persist on-device via localStorage (every edit) + debounced library mirror; labels say “saved on this device”
 - Public repo renamed to `victorkung/clipgenerator`; private companion repo retired
 - Docs cleanup: single-repo private packs (no companion private repo required); removed superseded design plan docs
-- **Desk feedback pass:** Post is a center tab; craft = Clip → Caption → Export; no on-player caption overlay; Start/End labels; wider transcript + craft column; app max-width; center content centered; landing uses same 3-col shell
+- **Desk feedback pass:** Post is a center tab; craft = Clip → Caption → Export; Start/End labels; wider transcript + craft column
 - **Whisper allowlist:** UI and API accept **small** and **medium** only (unknown sizes fall back to small); CLI still supports more models
 - Export success paths show `/clips/…` only; sidebar foot is **Open in Finder**
 - Agent handoff: shared editable prompts (localStorage), general-purpose copy, brand assets under `brand/`, favicons in frontend public

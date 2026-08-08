@@ -365,7 +365,10 @@
 
 .paper__margin {
   position: relative;
+  /* Stretch with transcript column so absolute in/out marks use full height */
+  align-self: stretch;
   min-height: 100%;
+  height: 100%;
   width: 16px;
 }
 
@@ -941,7 +944,7 @@
   display: flex;
   gap: var(--space-2);
   align-items: flex-start;
-  justify-content: space-between;
+  min-width: 0;
 }
 
 .clip-card__title {
@@ -955,28 +958,35 @@
   white-space: nowrap;
   min-width: 0;
   flex: 1;
-  padding-right: 4px;
 }
 
 .list-item__title {
   padding-right: 0;
 }
 
-.clip-card__range {
+.clip-card__meta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0 6px;
+  align-items: center;
   font-family: var(--font-sans);
   font-size: 11px;
+  color: var(--color-text-faint);
+  line-height: 1.4;
+  width: 100%;
+}
+
+.clip-card__meta .sep {
+  opacity: 0.45;
+}
+
+.clip-card__range {
   color: var(--color-text-muted);
   font-variant-numeric: tabular-nums;
 }
 
 .clip-card--active .clip-card__range {
   color: var(--color-range-strip);
-}
-
-.clip-card__meta {
-  font-family: var(--font-sans);
-  font-size: 11px;
-  color: var(--color-text-faint);
 }
 
 .clip-card__why {
@@ -989,12 +999,6 @@
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
-}
-
-.clip-card .btn--icon {
-  position: absolute;
-  top: 6px;
-  right: 4px;
 }
 
 /* ——— Transcript lines (on paper) ——— */
@@ -1015,6 +1019,8 @@
   line-height: 1.65;
   cursor: pointer;
   transition: background var(--duration-fast) var(--ease-out);
+  /* Keeps jump-to-line scroll from sitting flush under the paper edge */
+  scroll-margin-top: 12px;
 }
 
 .transcript-line:hover {
@@ -1511,6 +1517,14 @@
   min-width: 0;
 }
 
+.clip-caption-actions__regen {
+  width: 100%;
+  justify-content: flex-start;
+  margin-top: var(--space-2);
+  font-size: var(--text-ui-sm);
+  color: var(--color-text-faint);
+}
+
 .ruler__legend {
   display: flex;
   flex-wrap: wrap;
@@ -1734,6 +1748,10 @@
   padding: var(--space-5) 0 0;
   border-top: 1px solid var(--color-paper-rule);
   margin-top: var(--space-5);
+}
+
+.caption-editor__footer .btn--primary {
+  margin-left: auto;
 }
 
 .caption-stale {

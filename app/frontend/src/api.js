@@ -78,6 +78,12 @@ export const api = {
       method: "POST",
       body: JSON.stringify({ path }),
     }),
+  /** Same Pillow plate as export burn-in — use for monitor preview parity. */
+  captionPlatePreview: (body) =>
+    req("/api/caption-plate-preview", {
+      method: "POST",
+      body: JSON.stringify(body),
+    }),
   mediaUrl: (absPath) => `/api/media?path=${encodeURIComponent(absPath)}`,
 };
 
