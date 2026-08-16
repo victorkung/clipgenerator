@@ -1,8 +1,8 @@
 # Public repository
 
-This is **Clipgenerator-Public**: download, transcribe, mark clips, export.
+This is the public editor: download, transcribe, mark clips, export.
 
-The daily-driver desk with agents and Typefully lives in a **private** repo (`victorkung/clipgenerator`).
+The daily-driver desk with agents and Typefully lives in a **private** repo.
 
 ## Never commit
 

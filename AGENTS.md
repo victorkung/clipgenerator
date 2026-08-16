@@ -1,6 +1,6 @@
 # Agent instructions (public editor)
 
-This repo is **Clipgenerator-Public**: download → Whisper → editor → export. No in-app LLM, Typefully, or X publish.
+This repo is the **public editor** (`victorkung/clipgenerator`): download → Whisper → editor → export. No in-app LLM, Typefully, or X publish. Frozen artifact.
 
 The human does not run git commits. Only commit when they ask.
 
