@@ -4,79 +4,53 @@
 
 # clipgenerator
 
-**Local multi-clip studio** for long YouTube and X videos: download → on-device transcription → mark in/out against a live transcript → export clean H.264+AAC clips (optional SRT captions).
+A **local clip desk**. Paste a YouTube or X link. The video downloads and transcribes on your Mac. You mark clips against the transcript and export H.264 files.
 
-This public repo is the **editor only** — no in-app LLM agents and no social publish.
-
-No cloud speech bill. No accounts. Runs on **your machine** (Apple Silicon recommended for MLX Whisper).
+No account. No cloud speech bill. Nothing leaves the machine.
 
 ```text
-URL → yt-dlp download → MLX Whisper STT → multi-clip editor → export clips/
+URL  →  download  →  Whisper (on device)  →  mark clips  →  export
 ```
 
-| | |
-|--|--|
-| **UI** | http://127.0.0.1:5173 (Vite) |
-| **API** | http://127.0.0.1:8787 (FastAPI) |
+<p align="center">
+  <img src="docs/images/welcome.png" alt="clipgenerator welcome desk: paste a link, it becomes a transcript you can cut from" width="920" />
+</p>
 
 ---
 
-## Screenshots
+## What you get
 
-### Welcome desk
+Three columns, like a cutting room:
 
-![Welcome screen with sources rail and onboarding paper](docs/images/welcome.png)
+1. **Sources + clips** — every video you’ve ingested, and the cuts on the one that’s open.
+2. **Paper** — the transcript. Click a line to seek. The highlighted wash is the clip you’re marking.
+3. **Craft** — the full-source player, start/end times, caption plate, export.
 
-### Editor — transcript + clip craft
+Captions are optional. You still scrub the **source** video; caption times are relative to the clip start. Export burns plates when cues exist and always writes an `.srt`.
 
-![Three-column editor with transcript, video, and clip controls](docs/images/editor.png)
+<p align="center">
+  <img src="docs/images/editor.png" alt="Editor: transcript in the center, source video and clip controls on the right" width="920" />
+</p>
 
-### Captions
+<p align="center">
+  <img src="docs/images/captions.png" alt="Captions tab with clip-relative cues" width="920" />
+</p>
 
-![Captions tab with clip-relative cues](docs/images/captions.png)
-
----
-
-## Workflow
-
-1. **Ingest** a YouTube or X URL (download + local Whisper). Use a **watch / status** URL, not the site homepage.
-2. **Play** the source; click transcript lines to seek.
-3. **Mark** start/end with **I** / **O**, typed times, or Set start / Set end.
-4. Optionally **Generate captions** → edit text on the Captions tab; style the **Caption plate** in craft.
-5. **Export clip** → `videos/…/clips/` with burned-in plates when cues exist, plus `.srt`.
-
-| Action | How |
-|--------|-----|
-| Set start | Playhead → **Set start**, key **I** |
-| Set end | Playhead → **Set end**, key **O** |
-| Type times | Start/End fields → Enter or **Apply** |
-| Seek from transcript | Click a line |
-| Captions | **Generate captions** → Captions tab |
-| New clip on same source | **Add clip** |
-| Open exports | **Open in Finder** |
-
-**Caption note:** You scrub the **source** video. Caption times are **relative to the clip start**. If you change in/out, regenerate captions.
+This public repo is the **editor**. It does not draft posts or publish to social networks.
 
 ---
 
-## Prerequisites
+## Run it
 
-| Tool | Why | Install (macOS) |
-|------|-----|-----------------|
-| **macOS + Apple Silicon** | MLX Whisper is optimized for M-series | — |
-| **Homebrew** | Installs CLI tools | [brew.sh](https://brew.sh) |
-| **yt-dlp** | Download YouTube / X | `brew install yt-dlp` |
-| **ffmpeg** | Normalize + export H.264/AAC | `brew install ffmpeg` |
-| **Python 3.10+** | API + Whisper | system or `brew install python` |
-| **Node.js 18+** | Vite UI | `brew install node` |
-
----
-
-## Install
+**Need:** macOS on Apple Silicon, [Homebrew](https://brew.sh), then:
 
 ```bash
-git clone https://github.com/victorkung/Clipgenerator-Public.git
-cd Clipgenerator-Public
+brew install yt-dlp ffmpeg python node
+```
+
+```bash
+git clone https://github.com/victorkung/clipgenerator.git
+cd clipgenerator
 
 python3 -m venv .venv
 source .venv/bin/activate
@@ -84,31 +58,57 @@ pip install -r requirements.txt
 
 cd app/frontend && npm install && cd ../..
 cp .env.example .env
-```
 
-Speech-to-text is on-device via `mlx-whisper`. The first run downloads model weights from Hugging Face.
-
-**UI / API models:** `small` (default, faster) or `medium` (clearer names, ~2× slower).
-
-```bash
 ./scripts/dev.sh
-# UI  http://127.0.0.1:5173
-# API http://127.0.0.1:8787
 ```
 
-Do not use `RELOAD=1` while long downloads/STT are running.
+Open **http://127.0.0.1:5173**. The API is **http://127.0.0.1:8787**.
+
+The first transcribe downloads the Whisper model (a few minutes). Later runs use the cache.
+
+| Model | When to pick it |
+|-------|-----------------|
+| **small** (default) | Faster. Fine for most shows. |
+| **medium** | Clearer names and jargon. About 2× slower. |
 
 ---
 
-## Folder layout
+## Cut a clip
 
-`videos/YYYY-MM-DD ShowName/` — date is **ingest day (today)**, not the original publish date. Library is gitignored `data/library.json`.
+1. Paste a YouTube **watch** URL or an X **status** URL (not the homepage) → **Add source**.
+2. Wait until the source is **ready**. Check the duration — some X posts are 30-second promos, not the full show.
+3. Play. Click a transcript line to jump.
+4. **I** sets start at the playhead, **O** sets end. Or type times and press Enter / **Apply**.
+5. **Add clip** if you want another cut on the same source.
+6. Optional: **Generate captions**, edit text on the Captions tab, set the plate style in craft.
+7. **Export** — files land in `videos/YYYY-MM-DD ShowName/clips/`. **Open in Finder** to see them.
+
+Wrong URL? **Remove** the source in the rail. That cancels download / Whisper / export. Files on disk stay.
+
+| Key / control | What it does |
+|---------------|----------------|
+| **I** | Start at playhead |
+| **O** | End at playhead |
+| Start / End fields | Type a time, Enter or Apply |
+| Click a transcript line | Seek the player |
+| **Add clip** | Another cut on this source |
+
+Do not run the API with `RELOAD=1` during a long download or transcribe.
 
 ---
 
-## Never commit
+## Layout on disk
 
-`.env`, `videos/`, `data/`, `.venv/`, transcripts, audio sidecars.
+```text
+videos/YYYY-MM-DD ShowName/
+  source.mp4
+  source.transcript.json
+  clips/
+    01-…/video.mp4
+    01-…/captions.srt
+```
+
+The date is the day you ingested (today), not the original publish date. The library file is local `data/library.json` (not committed).
 
 ---
 
