@@ -1,0 +1,7 @@
+{
+  "name": "clipgenerator",
+  "private": true,
+  "scripts": {
+    "dev": "./scripts/dev.sh"
+  }
+}

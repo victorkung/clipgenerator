@@ -1,0 +1,31 @@
+# Secrets — never commit API keys
+.env
+
+# Private workflow packs (Option B) — keep local / private remote only
+prompts/private/**
+!prompts/private/README.md
+
+# Downloaded media + derived artifacts (local only)
+videos/
+data/
+*.audio.m4a
+*.transcript.json
+*.transcript.txt
+
+# Live ingest snapshots (download.sh copies itself so edits cannot desync bash 3.2)
+scripts/.download.running.*
+
+# Python
+.venv/
+__pycache__/
+*.pyc
+*.pyo
+
+# Node / frontend
+app/frontend/node_modules/
+app/frontend/dist/
+
+# OS / editor
+.DS_Store
+.idea/
+.vscode/

@@ -1,0 +1,7 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" width="24" height="24" role="img" aria-label="clipgenerator mark">
+  <g fill="none" stroke="#c9713f" stroke-width="1.8" stroke-linecap="square" stroke-linejoin="miter">
+    <path d="M7 5H4v14h3"></path>
+    <path d="M17 5h3v14h-3"></path>
+  </g>
+  <circle cx="12" cy="12" r="2.1" fill="#c9713f"></circle>
+</svg>

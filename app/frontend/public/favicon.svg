@@ -1,0 +1,8 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32" width="32" height="32" role="img" aria-label="clipgenerator">
+  <rect width="32" height="32" fill="#f4efe4"></rect>
+  <g fill="none" stroke="#a75a35" stroke-width="2.2" stroke-linecap="butt">
+    <path d="M9.3 10.7H5.3v11.6h4"></path>
+    <path d="M22.7 10.7h4v11.6h-4"></path>
+  </g>
+  <circle cx="16" cy="16.5" r="2.6" fill="#a75a35"></circle>
+</svg>
